@@ -1,7 +1,90 @@
-import "./vendor/lucide.min.js";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { save } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import {
+  AudioWaveform,
+  Braces,
+  Check,
+  ChevronDown,
+  CircleAlert,
+  Contrast,
+  Copy,
+  Download,
+  Eraser,
+  Files,
+  FolderOpen,
+  FolderOutput,
+  Globe2,
+  Headphones,
+  History,
+  House,
+  Languages,
+  LayoutDashboard,
+  LibraryBig,
+  LoaderCircle,
+  Menu,
+  Minus,
+  MonitorCog,
+  Pause,
+  Play,
+  Plus,
+  RotateCcw,
+  Save,
+  ScanText,
+  Search,
+  SearchX,
+  Settings2,
+  ShieldCheck,
+  Sparkles,
+  Square,
+  Trash2,
+  TriangleAlert,
+  Volume2,
+  X,
+  createIcons,
+} from "lucide";
+
+const iconSet = {
+  AudioWaveform,
+  Braces,
+  Check,
+  ChevronDown,
+  CircleAlert,
+  Contrast,
+  Copy,
+  Download,
+  Eraser,
+  Files,
+  FolderOpen,
+  FolderOutput,
+  Globe2,
+  Headphones,
+  History,
+  House,
+  Languages,
+  LayoutDashboard,
+  LibraryBig,
+  LoaderCircle,
+  Menu,
+  Minus,
+  MonitorCog,
+  Pause,
+  Play,
+  Plus,
+  RotateCcw,
+  Save,
+  ScanText,
+  Search,
+  SearchX,
+  Settings2,
+  ShieldCheck,
+  Sparkles,
+  Square,
+  Trash2,
+  TriangleAlert,
+  Volume2,
+  X,
+};
 
 const elements = {
   textInput: document.querySelector("#textInput"),
@@ -42,6 +125,16 @@ const elements = {
   historyEmpty: document.querySelector("#historyEmpty"),
   historyCount: document.querySelector("#historyCount"),
   clearHistoryButton: document.querySelector("#clearHistoryButton"),
+  importFilesButton: document.querySelector("#importFilesButton"),
+  batchPanel: document.querySelector("#batchPanel"),
+  batchCount: document.querySelector("#batchCount"),
+  batchList: document.querySelector("#batchList"),
+  batchProgress: document.querySelector("#batchProgress"),
+  batchProgressText: document.querySelector("#batchProgressText"),
+  batchProgressBar: document.querySelector("#batchProgressBar"),
+  clearBatchButton: document.querySelector("#clearBatchButton"),
+  stopBatchButton: document.querySelector("#stopBatchButton"),
+  startBatchButton: document.querySelector("#startBatchButton"),
   apiDialog: document.querySelector("#apiDialog"),
   confirmDialog: document.querySelector("#confirmDialog"),
   advancedDialog: document.querySelector("#advancedDialog"),
@@ -67,6 +160,10 @@ const elements = {
   catalogList: document.querySelector("#catalogList"),
   systemVersion: document.querySelector("#systemVersion"),
   applicationVersion: document.querySelector("#applicationVersion"),
+  desktopExportSection: document.querySelector("#desktopExportSection"),
+  exportDirectoryPath: document.querySelector("#exportDirectoryPath"),
+  chooseExportDirectoryButton: document.querySelector("#chooseExportDirectoryButton"),
+  clearExportDirectoryButton: document.querySelector("#clearExportDirectoryButton"),
 };
 
 const defaultVoice = document.body.dataset.defaultVoice;
@@ -155,10 +252,24 @@ let audioSource = null;
 let frequencyData = null;
 let spectrumFrame = null;
 let advancedSaveTimer = null;
+let batchItems = [];
+let batchRunning = false;
+let batchRunId = "";
+let batchCancellationRequested = false;
+let singleGenerationBusy = false;
+let exportDirectory = "";
+let isDesktopApp = false;
+let batchItemSequence = 0;
+let historyReloadTimer = null;
+let historyRequestSequence = 0;
 
 const draftStorageKey = "voice-studio-draft-v1";
 const accessibilityStorageKey = "voice-studio-accessibility-v1";
+const exportDirectoryStorageKey = "voice-studio-export-directory-v1";
 const accessibilityDefaults = { zoom: 100, highContrast: false, reduceMotion: false };
+const maxTextLength = Number(document.body.dataset.maxText) || 10_000;
+const maxBatchFiles = 50;
+const batchConcurrency = 3;
 
 function signedValue(value, suffix) {
   const number = Number(value);
@@ -166,7 +277,7 @@ function signedValue(value, suffix) {
 }
 
 function refreshIcons() {
-  if (window.lucide) window.lucide.createIcons();
+  createIcons({ icons: iconSet });
 }
 
 function hashVoiceName(value) {
@@ -411,8 +522,9 @@ function createUiSelect(root, onChange) {
 }
 
 function setBusy(busy) {
-  elements.generateButton.disabled = busy || !voiceControl.value;
-  elements.bottomGenerateButton.disabled = busy || !voiceControl.value;
+  singleGenerationBusy = busy;
+  elements.generateButton.disabled = busy || batchRunning || !voiceControl.value;
+  elements.bottomGenerateButton.disabled = busy || batchRunning || !voiceControl.value;
   elements.generateButton.classList.toggle("is-loading", busy);
   elements.generateButton.querySelector("span").textContent = busy ? "正在生成" : "生成并试听";
 
@@ -432,6 +544,7 @@ function setBusy(busy) {
     elements.audioResult.hidden = !elements.audioPlayer.src;
     elements.emptyState.hidden = Boolean(elements.audioPlayer.src);
   }
+  renderBatch();
 }
 
 function selectedVoice() {
@@ -749,10 +862,11 @@ async function loadVoices() {
     const preferredVoice = voicesByName.has(defaultVoice) ? defaultVoice : payload.voices[0]?.shortName;
     if (preferredVoice) voiceControl.setValue(preferredVoice);
     voiceControl.setDisabled(payload.voices.length === 0);
-    elements.generateButton.disabled = payload.voices.length === 0;
-    elements.bottomGenerateButton.disabled = payload.voices.length === 0;
+    elements.generateButton.disabled = payload.voices.length === 0 || batchRunning;
+    elements.bottomGenerateButton.disabled = payload.voices.length === 0 || batchRunning;
     if (payload.voices.length === 0) showError("该语言暂时没有可用音色");
     updateVoiceSummary();
+    renderBatch();
   } catch (error) {
     if (requestSequence !== voiceRequestSequence) return;
     const normalized = normalizedNativeError(error, "获取音色失败");
@@ -987,14 +1101,25 @@ function renderHistory(items) {
 }
 
 async function loadHistory() {
+  const requestSequence = ++historyRequestSequence;
   try {
     const payload = await invoke("list_history");
+    if (requestSequence !== historyRequestSequence) return;
     historyItems = payload.history;
     renderHistory(historyItems);
   } catch (error) {
+    if (requestSequence !== historyRequestSequence) return;
     const normalized = normalizedNativeError(error, "转换记录载入失败");
     showError(normalized.message, normalized.detail);
   }
+}
+
+function scheduleHistoryReload() {
+  clearTimeout(historyReloadTimer);
+  historyReloadTimer = setTimeout(() => {
+    historyReloadTimer = null;
+    loadHistory();
+  }, 150);
 }
 
 async function playHistory(id) {
@@ -1027,6 +1152,10 @@ async function downloadHistory(id) {
   const voiceName = (record.voiceName || "audio").replace(/[\\/:*?"<>|]/g, "-");
   const timestamp = formatDownloadTimestamp(new Date(record.createdAt));
   try {
+    if (isDesktopApp && exportDirectory) {
+      await exportRecordToConfiguredDirectory(id);
+      return;
+    }
     const destination = await save({
       defaultPath: `voice-studio-${voiceName}-${timestamp}.mp3`,
       filters: [{ name: "MP3 音频", extensions: ["mp3"] }],
@@ -1036,6 +1165,57 @@ async function downloadHistory(id) {
   } catch (error) {
     const normalized = normalizedNativeError(error, "导出音频失败");
     showError(normalized.message, normalized.detail);
+  }
+}
+
+function updateExportDirectoryControl() {
+  elements.exportDirectoryPath.textContent = exportDirectory || "尚未设置";
+  elements.exportDirectoryPath.title = exportDirectory;
+  elements.clearExportDirectoryButton.disabled = !exportDirectory;
+}
+
+function persistExportDirectory(directory) {
+  exportDirectory = directory || "";
+  try {
+    if (exportDirectory) localStorage.setItem(exportDirectoryStorageKey, exportDirectory);
+    else localStorage.removeItem(exportDirectoryStorageKey);
+  } catch (_) {
+    // The current value still works for this session when storage is unavailable.
+  }
+  updateExportDirectoryControl();
+}
+
+function restoreExportDirectory() {
+  try {
+    exportDirectory = localStorage.getItem(exportDirectoryStorageKey) || "";
+  } catch (_) {
+    exportDirectory = "";
+  }
+  updateExportDirectoryControl();
+}
+
+async function exportRecordToConfiguredDirectory(id) {
+  if (!exportDirectory) return "";
+  try {
+    return await invoke("export_history_to_directory", { id, directory: exportDirectory });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error || "导出目录不可用");
+    if (/不存在|不是文件夹|not found|directory/i.test(detail)) persistExportDirectory("");
+    throw error;
+  }
+}
+
+async function chooseExportDirectory() {
+  try {
+    const selected = await open({ directory: true, multiple: false, title: "选择默认导出文件夹" });
+    if (!selected || Array.isArray(selected)) return;
+    const canonicalPath = await invoke("validate_export_directory", { directory: selected });
+    persistExportDirectory(canonicalPath);
+    elements.advancedSaveStatus.textContent = "导出文件夹已保存";
+  } catch (error) {
+    const normalized = normalizedNativeError(error, "无法使用该导出文件夹");
+    showError(normalized.message, normalized.detail);
+    elements.advancedSaveStatus.textContent = "导出文件夹设置失败";
   }
 }
 
@@ -1055,9 +1235,16 @@ async function reuseHistory(record) {
   elements.textInput.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
-function askForConfirmation(title, message) {
+function askForConfirmation(title, message, options = {}) {
   document.querySelector("#confirmTitle").textContent = title;
   document.querySelector("#confirmMessage").textContent = message;
+  const acceptButton = document.querySelector("#acceptConfirmButton");
+  const cancelButton = document.querySelector("#cancelConfirmButton");
+  acceptButton.textContent = options.acceptLabel || "确认";
+  cancelButton.textContent = options.cancelLabel || "取消";
+  acceptButton.classList.toggle("button-danger", options.danger !== false);
+  acceptButton.classList.toggle("button-primary", options.danger === false);
+  document.querySelector(".confirm-icon").classList.toggle("is-neutral", options.danger === false);
   elements.confirmDialog.showModal();
   return new Promise((resolve) => { confirmResolver = resolve; });
 }
@@ -1125,9 +1312,260 @@ async function loadAppInformation() {
     const information = await invoke("app_information");
     elements.systemVersion.textContent = information.systemVersion;
     elements.applicationVersion.textContent = information.appVersion;
+    isDesktopApp = information.desktop === true;
+    elements.desktopExportSection.hidden = !isDesktopApp;
+    if (isDesktopApp && exportDirectory) {
+      try {
+        persistExportDirectory(await invoke("validate_export_directory", { directory: exportDirectory }));
+      } catch (error) {
+        persistExportDirectory("");
+        const normalized = normalizedNativeError(error, "默认导出文件夹已失效，请重新选择");
+        showError("默认导出文件夹已失效，请在高级设置中重新选择", normalized.detail);
+      }
+    }
   } catch (_) {
     elements.systemVersion.textContent = navigator.platform || "当前设备";
     elements.applicationVersion.textContent = "v1.2.0";
+  }
+}
+
+function batchStatusLabel(item) {
+  return {
+    pending: "等待生成",
+    running: "生成中",
+    success: item.exportedPath ? "已生成并导出" : "生成成功",
+    warning: "已生成，导出失败",
+    error: "生成失败",
+    skipped: "已跳过",
+    cancelled: "已取消",
+  }[item.status] || "等待生成";
+}
+
+function renderBatch() {
+  elements.batchPanel.hidden = batchItems.length === 0;
+  elements.batchCount.textContent = batchItems.length;
+  elements.batchList.replaceChildren();
+  const fragment = document.createDocumentFragment();
+  for (const item of batchItems) {
+    const row = document.createElement("li");
+    row.className = "batch-item";
+    const copy = document.createElement("div");
+    copy.className = "batch-file-copy";
+    const name = document.createElement("strong");
+    name.textContent = item.name;
+    const detail = document.createElement("small");
+    detail.textContent = item.detail || (item.status === "pending" ? "使用当前音色与参数" : "");
+    detail.title = item.detail || item.exportedPath || "";
+    copy.append(name, detail);
+
+    const count = document.createElement("span");
+    count.className = "batch-character-count";
+    count.textContent = `${item.characterCount.toLocaleString("zh-CN")} 字`;
+    const status = document.createElement("span");
+    status.className = `batch-status is-${item.status}`;
+    status.textContent = batchStatusLabel(item);
+    status.title = item.detail || item.exportedPath || "";
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "icon-button batch-remove";
+    remove.title = "移除文件";
+    remove.setAttribute("aria-label", `移除 ${item.name}`);
+    remove.disabled = batchRunning || item.status === "running";
+    const removeIcon = document.createElement("i");
+    removeIcon.dataset.lucide = "x";
+    remove.append(removeIcon);
+    remove.addEventListener("click", () => {
+      batchItems = batchItems.filter((candidate) => candidate.id !== item.id);
+      renderBatch();
+    });
+    row.append(copy, count, status, remove);
+    fragment.append(row);
+  }
+  elements.batchList.append(fragment);
+
+  const completed = batchItems.filter((item) => ["success", "warning", "error", "skipped", "cancelled"].includes(item.status)).length;
+  elements.batchProgressBar.max = Math.max(1, batchItems.length);
+  elements.batchProgressBar.value = completed;
+  if (batchRunning || completed > 0) {
+    elements.batchProgress.hidden = false;
+    const success = batchItems.filter((item) => item.status === "success").length;
+    const failed = batchItems.filter((item) => ["warning", "error"].includes(item.status)).length;
+    const skipped = batchItems.filter((item) => item.status === "skipped").length;
+    const cancelled = batchItems.filter((item) => item.status === "cancelled").length;
+    elements.batchProgressText.textContent = batchRunning
+      ? batchCancellationRequested
+        ? `正在停止 · 已结束 ${completed}/${batchItems.length}`
+        : `处理中 ${completed}/${batchItems.length} · 并发 ${batchConcurrency}`
+      : `完成 ${success} · 异常 ${failed} · 跳过 ${skipped} · 取消 ${cancelled}`;
+  } else {
+    elements.batchProgress.hidden = true;
+  }
+  const hasRunnable = batchItems.some((item) => ["pending", "error", "cancelled"].includes(item.status));
+  elements.startBatchButton.hidden = batchRunning;
+  elements.stopBatchButton.hidden = !batchRunning;
+  elements.stopBatchButton.disabled = !batchRunning || batchCancellationRequested;
+  elements.stopBatchButton.querySelector("span").textContent = batchCancellationRequested ? "正在停止" : "停止生成";
+  elements.startBatchButton.disabled = batchRunning || singleGenerationBusy || !hasRunnable || !voiceControl.value;
+  elements.clearBatchButton.disabled = batchRunning;
+  elements.importFilesButton.disabled = batchRunning;
+  refreshIcons();
+}
+
+async function importBatchFiles() {
+  showError();
+  try {
+    const selected = await open({
+      multiple: true,
+      directory: false,
+      title: "导入文本文件",
+      filters: [{ name: "文本文件", extensions: ["txt", "text", "md", "markdown"] }],
+    });
+    if (!selected) return;
+    const paths = Array.isArray(selected) ? selected : [selected];
+    if (batchItems.length + paths.length > maxBatchFiles) {
+      showError(`批量列表最多保留 ${maxBatchFiles} 个文件`);
+      return;
+    }
+    const files = await invoke("read_batch_text_files", { paths });
+    const oversized = files.filter((file) => file.characterCount > maxTextLength);
+    if (oversized.length > 0) {
+      const accepted = await askForConfirmation(
+        `有 ${oversized.length} 个文件超过字数限制`,
+        `单个文件最多 ${maxTextLength.toLocaleString("zh-CN")} 字。是否跳过这些文件并继续导入其余文件？`,
+        { acceptLabel: "跳过并继续", danger: false },
+      );
+      if (!accepted) return;
+    }
+    for (const file of files) {
+      const empty = !file.text.trim();
+      const overLimit = file.characterCount > maxTextLength;
+      batchItems.push({
+        id: `batch-${Date.now()}-${batchItemSequence += 1}`,
+        name: file.name,
+        text: file.text,
+        characterCount: file.characterCount,
+        status: empty || overLimit ? "skipped" : "pending",
+        detail: empty ? "文件内容为空" : overLimit ? `超过 ${maxTextLength.toLocaleString("zh-CN")} 字限制` : "",
+        recordId: "",
+        exportedPath: "",
+      });
+    }
+    renderBatch();
+    elements.batchPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (error) {
+    const normalized = normalizedNativeError(error, "文本文件导入失败");
+    showError(normalized.message, normalized.detail);
+  }
+}
+
+function currentSynthesisOptions(text) {
+  return {
+    text,
+    voice: voiceControl.value,
+    rate: signedValue(document.querySelector("#rateInput").value, "%"),
+    volume: signedValue(document.querySelector("#volumeInput").value, "%"),
+    pitch: signedValue(document.querySelector("#pitchInput").value, "Hz"),
+  };
+}
+
+async function runBatchItem(item, options, batchId) {
+  item.status = "running";
+  item.detail = "正在生成语音";
+  renderBatch();
+  try {
+    const record = await invoke("synthesize_batch_item", {
+      batchId,
+      options: { ...options, text: item.text },
+    });
+    item.recordId = record.id;
+    item.status = "success";
+    item.detail = "语音已保存到转换记录";
+    scheduleHistoryReload();
+    if (isDesktopApp && exportDirectory) {
+      try {
+        item.exportedPath = await exportRecordToConfiguredDirectory(record.id);
+        item.detail = item.exportedPath;
+      } catch (error) {
+        item.status = "warning";
+        item.detail = `音频已生成，但导出失败：${String(error)}`;
+      }
+    }
+  } catch (error) {
+    const normalized = normalizedNativeError(error, "语音生成失败");
+    const cancelled = batchCancellationRequested || /任务已取消|cancelled|canceled/i.test(normalized.detail);
+    item.status = cancelled ? "cancelled" : "error";
+    item.detail = cancelled ? "任务已取消，可重新生成" : normalized.detail || normalized.message;
+  }
+  renderBatch();
+}
+
+async function stopBatch() {
+  if (!batchRunning || !batchRunId || batchCancellationRequested) return;
+  batchCancellationRequested = true;
+  for (const item of batchItems) {
+    if (item.status === "pending") {
+      item.status = "cancelled";
+      item.detail = "任务已取消，可重新生成";
+    } else if (item.status === "running") {
+      item.detail = "正在取消";
+    }
+  }
+  renderBatch();
+  try {
+    await invoke("cancel_batch", { batchId: batchRunId });
+  } catch (error) {
+    const normalized = normalizedNativeError(error, "停止批量任务失败");
+    showError(normalized.message, normalized.detail);
+  }
+}
+
+async function startBatch() {
+  if (batchRunning || !voiceControl.value) return;
+  const queue = batchItems.filter((item) => ["pending", "error", "cancelled"].includes(item.status));
+  if (queue.length === 0) return;
+  batchRunning = true;
+  batchCancellationRequested = false;
+  batchRunId = globalThis.crypto?.randomUUID
+    ? globalThis.crypto.randomUUID().replaceAll("-", "")
+    : `batch-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  showError();
+  elements.generateButton.disabled = true;
+  elements.bottomGenerateButton.disabled = true;
+  for (const item of queue) {
+    item.status = "pending";
+    item.detail = "等待生成";
+    item.recordId = "";
+    item.exportedPath = "";
+  }
+  renderBatch();
+  const options = currentSynthesisOptions("");
+  const currentBatchRunId = batchRunId;
+  let nextIndex = 0;
+  async function worker() {
+    while (!batchCancellationRequested && nextIndex < queue.length) {
+      const item = queue[nextIndex];
+      nextIndex += 1;
+      await runBatchItem(item, options, currentBatchRunId);
+    }
+  }
+  try {
+    await Promise.all(Array.from({ length: Math.min(batchConcurrency, queue.length) }, () => worker()));
+  } finally {
+    try {
+      await invoke("finish_batch", { batchId: currentBatchRunId });
+    } catch (error) {
+      const normalized = normalizedNativeError(error, "批量任务清理失败");
+      showError(normalized.message, normalized.detail);
+    }
+    clearTimeout(historyReloadTimer);
+    historyReloadTimer = null;
+    await loadHistory();
+    batchRunning = false;
+    batchRunId = "";
+    batchCancellationRequested = false;
+    elements.generateButton.disabled = singleGenerationBusy || !voiceControl.value;
+    elements.bottomGenerateButton.disabled = singleGenerationBusy || !voiceControl.value;
+    renderBatch();
   }
 }
 
@@ -1170,6 +1608,7 @@ function activateMobilePanel(panelId) {
 function closeSidebar() {
   document.body.classList.remove("sidebar-open");
   document.querySelector("#sidebarBackdrop").hidden = true;
+  document.querySelector("#menuButton").setAttribute("aria-expanded", "false");
 }
 
 function updateRangeOutputs() {
@@ -1273,6 +1712,15 @@ for (const [inputId, outputId, suffix, displaySuffix] of [
 }
 
 elements.textInput.addEventListener("input", updateCharacterCount);
+elements.importFilesButton.addEventListener("click", importBatchFiles);
+elements.startBatchButton.addEventListener("click", startBatch);
+elements.stopBatchButton.addEventListener("click", stopBatch);
+elements.clearBatchButton.addEventListener("click", () => {
+  if (!batchRunning) {
+    batchItems = [];
+    renderBatch();
+  }
+});
 elements.generateButton.addEventListener("click", synthesize);
 elements.downloadButton.addEventListener("click", downloadCurrentAudio);
 elements.topDownloadButton.addEventListener("click", downloadCurrentAudio);
@@ -1312,6 +1760,8 @@ for (const button of document.querySelectorAll("[data-catalog-gender]")) {
 document.querySelector("#closeApiButton").addEventListener("click", () => elements.apiDialog.close());
 document.querySelector("#closeAdvancedButton").addEventListener("click", () => elements.advancedDialog.close());
 document.querySelector("#doneAdvancedButton").addEventListener("click", () => elements.advancedDialog.close());
+elements.chooseExportDirectoryButton.addEventListener("click", chooseExportDirectory);
+elements.clearExportDirectoryButton.addEventListener("click", () => persistExportDirectory(""));
 elements.interfaceZoomInput.addEventListener("input", () => persistAccessibilitySettings(accessibilitySettingsFromControls()));
 elements.zoomOutButton.addEventListener("click", () => adjustInterfaceZoom(-5));
 elements.zoomInButton.addEventListener("click", () => adjustInterfaceZoom(5));
@@ -1379,7 +1829,10 @@ document.querySelector("#settingsTab").addEventListener("click", () => activateM
 document.querySelector("#menuButton").addEventListener("click", () => {
   document.body.classList.add("sidebar-open");
   document.querySelector("#sidebarBackdrop").hidden = false;
+  document.querySelector("#menuButton").setAttribute("aria-expanded", "true");
+  document.querySelector("#sidebarCloseButton").focus();
 });
+document.querySelector("#sidebarCloseButton").addEventListener("click", closeSidebar);
 document.querySelector("#sidebarBackdrop").addEventListener("click", closeSidebar);
 for (const navigationButton of document.querySelectorAll("[data-scroll-target]")) {
   navigationButton.addEventListener("click", () => {
@@ -1391,7 +1844,7 @@ for (const navigationButton of document.querySelectorAll("[data-scroll-target]")
   });
 }
 window.addEventListener("resize", () => {
-  if (window.innerWidth > 1120) closeSidebar();
+  if (window.innerWidth > 1240) closeSidebar();
 });
 
 window.addEventListener("beforeunload", revokeGeneratedBlob);
@@ -1404,6 +1857,7 @@ document.addEventListener("pointerdown", (event) => {
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && activeSelectControl) activeSelectControl.close();
+  if (event.key === "Escape" && document.body.classList.contains("sidebar-open")) closeSidebar();
 });
 localeControl = createUiSelect(elements.localeSelect, loadVoices);
 voiceControl = createUiSelect(elements.voiceSelect, updateVoiceSummary);
@@ -1411,10 +1865,12 @@ catalogLanguageControl = createUiSelect(elements.catalogLanguageSelect, renderVo
 localeControl.setOptions(languageOptions);
 localeControl.setValue("zh-CN");
 restoreAccessibilitySettings();
+restoreExportDirectory();
 restoreDraft();
 updateRangeOutputs();
 updateCharacterCount();
 createWaveform();
 refreshIcons();
+renderBatch();
 loadAppInformation();
 loadVoices().then(loadHistory);

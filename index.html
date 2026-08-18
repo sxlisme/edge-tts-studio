@@ -17,6 +17,7 @@
         <div class="sidebar-brand">
           <span class="sidebar-logo"><i data-lucide="audio-waveform"></i></span>
           <div><strong>声工坊</strong><span>Voice Studio</span></div>
+          <button class="icon-button sidebar-close-button" id="sidebarCloseButton" type="button" aria-label="关闭菜单"><i data-lucide="x"></i></button>
         </div>
 
         <nav class="sidebar-nav" aria-label="主要导航">
@@ -39,7 +40,7 @@
             <span class="mobile-logo"><i data-lucide="audio-waveform"></i></span>
             <strong>声工坊</strong>
           </div>
-          <button class="icon-button menu-button" id="menuButton" type="button" title="打开菜单" aria-label="打开菜单"><i data-lucide="menu"></i></button>
+          <button class="icon-button menu-button" id="menuButton" type="button" title="打开菜单" aria-label="打开菜单" aria-controls="sidebar" aria-expanded="false"><i data-lucide="menu"></i></button>
 
           <div class="project-summary">
             <span id="projectSummaryLabel">当前项目</span>
@@ -68,7 +69,10 @@
               <label class="sr-only" for="textInput">需要转换的文字</label>
               <textarea id="textInput" maxlength="10000" placeholder="输入需要转换成语音的内容……">你好，欢迎使用本地语音工作台。这里可以将文字转换成自然流畅的语音。</textarea>
               <div class="input-footer">
-                <button class="button button-quiet compact-button" id="clearTextButton" type="button"><i data-lucide="eraser"></i><span>清空文本</span></button>
+                <div class="input-actions">
+                  <button class="button button-quiet compact-button" id="clearTextButton" type="button"><i data-lucide="eraser"></i><span>清空文本</span></button>
+                  <button class="button button-quiet compact-button" id="importFilesButton" type="button"><i data-lucide="files"></i><span>导入文件</span></button>
+                </div>
                 <span class="draft-status" id="draftStatus"></span>
               </div>
             </section>
@@ -136,6 +140,19 @@
               </div>
             </section>
           </div>
+
+          <section class="tool-panel batch-panel" id="batchPanel" aria-labelledby="batchTitle" hidden>
+            <div class="panel-heading batch-heading">
+              <div><span class="panel-kicker">批量任务</span><h2 id="batchTitle">文本文件 <span id="batchCount">0</span></h2></div>
+              <div class="batch-actions">
+                <button class="button button-quiet compact-button" id="clearBatchButton" type="button"><i data-lucide="x"></i><span>清空</span></button>
+                <button class="button button-danger compact-button" id="stopBatchButton" type="button" hidden><i data-lucide="square"></i><span>停止生成</span></button>
+                <button class="button button-primary compact-button" id="startBatchButton" type="button"><i data-lucide="play"></i><span>开始生成</span></button>
+              </div>
+            </div>
+            <div class="batch-progress" id="batchProgress" hidden><span id="batchProgressText">准备生成</span><progress id="batchProgressBar" value="0" max="1"></progress></div>
+            <ol class="batch-list" id="batchList"></ol>
+          </section>
 
           <section class="tool-panel player-panel" id="previewPanel" aria-labelledby="previewTitle">
             <div class="panel-heading player-heading">
@@ -234,7 +251,7 @@
 
     <dialog class="confirm-dialog" id="confirmDialog">
       <div class="confirm-icon"><i data-lucide="triangle-alert"></i></div><h2 id="confirmTitle">确认删除</h2><p id="confirmMessage"></p>
-      <div class="confirm-actions"><button class="button button-quiet" id="cancelConfirmButton" type="button">取消</button><button class="button button-danger" id="acceptConfirmButton" type="button">确认删除</button></div>
+      <div class="confirm-actions"><button class="button button-quiet" id="cancelConfirmButton" type="button">取消</button><button class="button button-danger" id="acceptConfirmButton" type="button">确认</button></div>
     </dialog>
 
     <dialog class="advanced-dialog" id="advancedDialog">
@@ -267,6 +284,18 @@
           <span class="setting-toggle-copy"><strong>减少动画</strong><small>降低界面动态效果</small></span>
           <input id="reduceMotionInput" type="checkbox"><span class="toggle-track" aria-hidden="true"></span>
         </label>
+      </section>
+
+      <section class="advanced-section export-directory-setting" id="desktopExportSection" aria-labelledby="exportDirectoryTitle" hidden>
+        <div class="advanced-section-heading compact-heading">
+          <span class="advanced-section-icon"><i data-lucide="folder-output"></i></span>
+          <div><h3 id="exportDirectoryTitle">默认导出文件夹</h3><p>下载与批量结果按生成时间命名</p></div>
+        </div>
+        <div class="export-directory-control">
+          <span id="exportDirectoryPath">尚未设置</span>
+          <button class="icon-button" id="clearExportDirectoryButton" type="button" title="清除导出文件夹" aria-label="清除导出文件夹" disabled><i data-lucide="x"></i></button>
+          <button class="button button-quiet compact-button" id="chooseExportDirectoryButton" type="button"><i data-lucide="folder-open"></i><span>选择文件夹</span></button>
+        </div>
       </section>
 
       <section class="advanced-section system-information" aria-labelledby="systemInformationTitle">

@@ -144,6 +144,7 @@ fn api_error(error: CoreError) -> Response {
         CoreError::Validation(_) => StatusCode::BAD_REQUEST,
         CoreError::NotFound => StatusCode::NOT_FOUND,
         CoreError::Timeout => StatusCode::GATEWAY_TIMEOUT,
+        CoreError::Cancelled => StatusCode::REQUEST_TIMEOUT,
         CoreError::Speech(_) => StatusCode::BAD_GATEWAY,
         CoreError::Io(_) | CoreError::Json(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };

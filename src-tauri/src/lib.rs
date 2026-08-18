@@ -6,7 +6,8 @@ mod api;
 use std::{path::PathBuf, sync::Arc};
 
 use core::{
-    AppCore, AudioPayload, HistoryResponse, SynthesisOptions, SynthesisResult, VoicesResponse,
+    AppCore, AudioPayload, BatchTextFile, HistoryRecord, HistoryResponse, SynthesisOptions,
+    SynthesisResult, VoicesResponse,
 };
 use serde::Serialize;
 use tauri::{Manager, State};
@@ -16,6 +17,7 @@ use tauri::{Manager, State};
 struct AppInformation {
     system_version: String,
     app_version: String,
+    desktop: bool,
 }
 
 #[tauri::command]
@@ -34,6 +36,39 @@ async fn synthesize(
     options: SynthesisOptions,
 ) -> Result<SynthesisResult, String> {
     core.synthesize(options)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn synthesize_batch_item(
+    core: State<'_, Arc<AppCore>>,
+    batch_id: String,
+    options: SynthesisOptions,
+) -> Result<HistoryRecord, String> {
+    core.synthesize_batch_and_store(&batch_id, options)
+        .await
+        .map(|result| result.record)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn cancel_batch(core: State<'_, Arc<AppCore>>, batch_id: String) -> Result<bool, String> {
+    core.cancel_batch(&batch_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn finish_batch(core: State<'_, Arc<AppCore>>, batch_id: String) -> Result<(), String> {
+    core.finish_batch(&batch_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn read_batch_text_files(paths: Vec<String>) -> Result<Vec<BatchTextFile>, String> {
+    core::read_text_files(paths)
         .await
         .map_err(|error| error.to_string())
 }
@@ -79,11 +114,32 @@ async fn export_history_audio(
 }
 
 #[tauri::command]
+async fn export_history_to_directory(
+    core: State<'_, Arc<AppCore>>,
+    id: String,
+    directory: String,
+) -> Result<String, String> {
+    core.export_history_to_directory(&id, &PathBuf::from(directory))
+        .await
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn validate_export_directory(directory: String) -> Result<String, String> {
+    core::validate_export_directory(&PathBuf::from(directory))
+        .await
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn app_information() -> AppInformation {
     AppInformation {
         system_version: sysinfo::System::long_os_version()
             .unwrap_or_else(|| std::env::consts::OS.to_owned()),
         app_version: format!("v{}", env!("CARGO_PKG_VERSION")),
+        desktop: cfg!(desktop),
     }
 }
 
@@ -102,11 +158,17 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_voices,
             synthesize,
+            synthesize_batch_item,
+            cancel_batch,
+            finish_batch,
+            read_batch_text_files,
             list_history,
             read_history_audio,
             delete_history,
             clear_history,
             export_history_audio,
+            export_history_to_directory,
+            validate_export_directory,
             app_information
         ])
         .run(tauri::generate_context!())

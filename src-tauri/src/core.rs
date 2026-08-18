@@ -13,11 +13,14 @@ use msedge_tts::{
 use quick_xml::escape::escape;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 const DEFAULT_VOICE: &str = "zh-CN-XiaoxiaoNeural";
 const MAX_TEXT_LENGTH: usize = 10_000;
 const MAX_HISTORY_ITEMS: usize = 50;
+const MAX_BATCH_FILES: usize = 50;
+const MAX_TEXT_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const VOICE_CACHE_DURATION: Duration = Duration::from_secs(6 * 60 * 60);
 const VOICE_TIMEOUT: Duration = Duration::from_secs(30);
 const SYNTHESIS_TIMEOUT: Duration = Duration::from_secs(180);
@@ -31,6 +34,8 @@ pub enum CoreError {
     NotFound,
     #[error("在线语音服务响应超时，请稍后重试")]
     Timeout,
+    #[error("任务已取消")]
+    Cancelled,
     #[error("在线语音服务请求失败：{0}")]
     Speech(String),
     #[error("本地文件操作失败：{0}")]
@@ -119,6 +124,14 @@ pub struct StoredSynthesis {
     pub audio: Vec<u8>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchTextFile {
+    pub name: String,
+    pub text: String,
+    pub character_count: usize,
+}
+
 #[derive(Default)]
 struct VoiceCache {
     fetched_at: Option<Instant>,
@@ -128,6 +141,8 @@ struct VoiceCache {
 pub struct AppCore {
     data_dir: PathBuf,
     history_lock: Mutex<()>,
+    export_lock: Mutex<()>,
+    batch_cancellations: Mutex<HashMap<String, CancellationToken>>,
     voice_cache: RwLock<VoiceCache>,
 }
 
@@ -136,6 +151,8 @@ impl AppCore {
         Self {
             data_dir,
             history_lock: Mutex::new(()),
+            export_lock: Mutex::new(()),
+            batch_cancellations: Mutex::new(HashMap::new()),
             voice_cache: RwLock::new(VoiceCache::default()),
         }
     }
@@ -232,12 +249,67 @@ impl AppCore {
         &self,
         options: SynthesisOptions,
     ) -> CoreResult<StoredSynthesis> {
-        let validated = ValidatedOptions::try_from(options)?;
-        let audio = tokio::time::timeout(SYNTHESIS_TIMEOUT, synthesize_online(&validated))
+        self.synthesize_and_store_with_cancellation(options, None)
             .await
-            .map_err(|_| CoreError::Timeout)??;
+    }
+
+    pub async fn synthesize_batch_and_store(
+        &self,
+        batch_id: &str,
+        options: SynthesisOptions,
+    ) -> CoreResult<StoredSynthesis> {
+        validate_batch_id(batch_id)?;
+        let cancellation = {
+            let mut cancellations = self.batch_cancellations.lock().await;
+            cancellations
+                .entry(batch_id.to_owned())
+                .or_default()
+                .clone()
+        };
+        self.synthesize_and_store_with_cancellation(options, Some(&cancellation))
+            .await
+    }
+
+    pub async fn cancel_batch(&self, batch_id: &str) -> CoreResult<bool> {
+        validate_batch_id(batch_id)?;
+        let cancellation = {
+            let mut cancellations = self.batch_cancellations.lock().await;
+            cancellations
+                .entry(batch_id.to_owned())
+                .or_default()
+                .clone()
+        };
+        let was_cancelled = cancellation.is_cancelled();
+        cancellation.cancel();
+        Ok(!was_cancelled)
+    }
+
+    pub async fn finish_batch(&self, batch_id: &str) -> CoreResult<()> {
+        validate_batch_id(batch_id)?;
+        self.batch_cancellations.lock().await.remove(batch_id);
+        Ok(())
+    }
+
+    async fn synthesize_and_store_with_cancellation(
+        &self,
+        options: SynthesisOptions,
+        cancellation: Option<&CancellationToken>,
+    ) -> CoreResult<StoredSynthesis> {
+        let validated = ValidatedOptions::try_from(options)?;
+        let audio = if let Some(cancellation) = cancellation {
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Err(CoreError::Cancelled),
+                result = synthesize_with_timeout(&validated) => result?,
+            }
+        } else {
+            synthesize_with_timeout(&validated).await?
+        };
         if audio.is_empty() {
             return Err(CoreError::Speech("没有返回音频数据".to_owned()));
+        }
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            return Err(CoreError::Cancelled);
         }
 
         let voice_gender = {
@@ -341,6 +413,43 @@ impl AppCore {
         Ok(())
     }
 
+    pub async fn export_history_to_directory(
+        &self,
+        id: &str,
+        directory: &Path,
+    ) -> CoreResult<PathBuf> {
+        let _guard = self.export_lock.lock().await;
+        let directory = validate_export_directory(directory).await?;
+
+        let (_, audio) = self.history_audio(id).await?;
+        let timestamp = Local::now().format("%Y%m%d-%H%M%S-%3f").to_string();
+        let mut attempt = 1;
+        loop {
+            let suffix = if attempt == 1 {
+                String::new()
+            } else {
+                format!("-{attempt}")
+            };
+            let destination = directory.join(format!("voice-studio-{timestamp}{suffix}.mp3"));
+            match tokio::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&destination)
+                .await
+            {
+                Ok(mut file) => {
+                    use tokio::io::AsyncWriteExt;
+                    file.write_all(&audio).await?;
+                    return Ok(destination);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    attempt += 1;
+                }
+                Err(error) => return Err(CoreError::Io(error)),
+            }
+        }
+    }
+
     async fn store_history_audio(&self, record: &HistoryRecord, audio: &[u8]) -> CoreResult<()> {
         let _guard = self.history_lock.lock().await;
         tokio::fs::create_dir_all(self.audio_dir()).await?;
@@ -394,6 +503,71 @@ impl AppCore {
     }
 }
 
+pub async fn validate_export_directory(directory: &Path) -> CoreResult<PathBuf> {
+    let metadata = tokio::fs::metadata(directory).await.map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            CoreError::Validation("导出文件夹不存在，请重新选择".to_owned())
+        } else {
+            CoreError::Io(error)
+        }
+    })?;
+    if !metadata.is_dir() {
+        return Err(CoreError::Validation(
+            "导出路径不是文件夹，请重新选择".to_owned(),
+        ));
+    }
+    Ok(tokio::fs::canonicalize(directory).await?)
+}
+
+pub async fn read_text_files(paths: Vec<String>) -> CoreResult<Vec<BatchTextFile>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    if paths.len() > MAX_BATCH_FILES {
+        return Err(CoreError::Validation(format!(
+            "每次最多选择 {MAX_BATCH_FILES} 个文件"
+        )));
+    }
+
+    let mut files = Vec::with_capacity(paths.len());
+    for raw_path in paths {
+        let path = PathBuf::from(&raw_path);
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("未命名文件")
+            .to_owned();
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !matches!(extension.as_str(), "txt" | "text" | "md" | "markdown") {
+            return Err(CoreError::Validation(format!("{name} 不是支持的文本文件")));
+        }
+
+        let metadata = tokio::fs::metadata(&path).await?;
+        if !metadata.is_file() {
+            return Err(CoreError::Validation(format!("{name} 不是普通文件")));
+        }
+        if metadata.len() > MAX_TEXT_FILE_BYTES {
+            return Err(CoreError::Validation(format!("{name} 超过 2 MB，无法读取")));
+        }
+
+        let data = tokio::fs::read(&path).await?;
+        let text = String::from_utf8(data)
+            .map_err(|_| CoreError::Validation(format!("{name} 不是 UTF-8 文本文件")))?
+            .trim_start_matches('\u{feff}')
+            .to_owned();
+        files.push(BatchTextFile {
+            character_count: text.chars().count(),
+            name,
+            text,
+        });
+    }
+    Ok(files)
+}
+
 #[derive(Debug)]
 struct ValidatedOptions {
     text: String,
@@ -432,6 +606,24 @@ impl TryFrom<SynthesisOptions> for ValidatedOptions {
             pitch: parse_signed(&options.pitch, "Hz", "音调")?,
         })
     }
+}
+
+fn validate_batch_id(batch_id: &str) -> CoreResult<()> {
+    if batch_id.is_empty()
+        || batch_id.len() > 100
+        || !batch_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err(CoreError::Validation("批量任务标识格式不正确".to_owned()));
+    }
+    Ok(())
+}
+
+async fn synthesize_with_timeout(options: &ValidatedOptions) -> CoreResult<Vec<u8>> {
+    tokio::time::timeout(SYNTHESIS_TIMEOUT, synthesize_online(options))
+        .await
+        .map_err(|_| CoreError::Timeout)?
 }
 
 async fn synthesize_online(options: &ValidatedOptions) -> CoreResult<Vec<u8>> {
@@ -696,5 +888,68 @@ mod tests {
                 .len(),
             MAX_HISTORY_ITEMS - 1
         );
+    }
+
+    #[tokio::test]
+    async fn reads_supported_utf8_text_files_and_counts_characters() {
+        let directory = tempfile::tempdir().expect("temporary directory should be available");
+        let text_path = directory.path().join("notes.txt");
+        let markdown_path = directory.path().join("article.md");
+        tokio::fs::write(&text_path, "\u{feff}你好")
+            .await
+            .expect("text fixture should be written");
+        tokio::fs::write(&markdown_path, "# 标题\n内容")
+            .await
+            .expect("markdown fixture should be written");
+
+        let files = read_text_files(vec![
+            text_path.to_string_lossy().into_owned(),
+            markdown_path.to_string_lossy().into_owned(),
+        ])
+        .await
+        .expect("text files should load");
+
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].text, "你好");
+        assert_eq!(files[0].character_count, 2);
+        assert_eq!(files[1].name, "article.md");
+    }
+
+    #[tokio::test]
+    async fn exports_to_an_existing_directory_without_overwriting() {
+        let data_directory = tempfile::tempdir().expect("data directory should be available");
+        let export_directory = tempfile::tempdir().expect("export directory should be available");
+        let core = AppCore::new(data_directory.path().to_owned());
+        let record = history_record(1);
+        core.store_history_audio(&record, b"audio")
+            .await
+            .expect("history item should be stored");
+
+        let destination = core
+            .export_history_to_directory(&record.id, export_directory.path())
+            .await
+            .expect("audio should be exported");
+
+        assert_eq!(tokio::fs::read(&destination).await.unwrap(), b"audio");
+        assert!(destination
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("voice-studio-") && name.ends_with(".mp3")));
+    }
+
+    #[tokio::test]
+    async fn cancels_a_batch_before_starting_an_online_request() {
+        let directory = tempfile::tempdir().expect("temporary directory should be available");
+        let core = AppCore::new(directory.path().to_owned());
+        let batch_id = "batch-cancellation-test";
+
+        assert!(core.cancel_batch(batch_id).await.unwrap());
+        let result = core
+            .synthesize_batch_and_store(batch_id, synthesis_options("不会发起网络请求"))
+            .await;
+        assert!(matches!(result, Err(CoreError::Cancelled)));
+
+        core.finish_batch(batch_id).await.unwrap();
+        assert!(!core.batch_cancellations.lock().await.contains_key(batch_id));
     }
 }
