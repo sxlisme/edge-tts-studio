@@ -3,213 +3,288 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <meta name="theme-color" content="#f5f5f7">
+    <meta name="theme-color" content="#f5f7fb">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
     <meta name="color-scheme" content="light">
-    <title>微软语音工作台</title>
+    <title>语音工作台</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   </head>
   <body data-default-voice="{{ default_voice }}" data-max-text="{{ max_text_length }}">
-    <header class="app-header">
-      <div class="brand">
-        <span class="brand-mark" aria-hidden="true"><i data-lucide="waveform"></i></span>
-        <div class="brand-copy">
-          <h1>微软语音工作台</h1>
-          <span>Edge TTS 本地版</span>
-        </div>
-      </div>
-      <div class="header-actions">
-        <span class="connection"><span class="status-dot"></span><span>服务正常</span></span>
-        <button class="button button-quiet" id="apiButton" type="button">
-          <i data-lucide="braces"></i>
-          <span class="api-label">API</span>
-        </button>
-      </div>
-    </header>
-
-    <main class="workspace">
-      <section class="editor-pane" aria-labelledby="editorTitle">
-        <div class="section-heading">
-          <div>
-            <span class="eyebrow">创作</span>
-            <h2 id="editorTitle">文字转语音</h2>
-          </div>
-          <span class="character-count"><strong id="characterCount">0</strong> / {{ max_text_length }}</span>
+    <div class="app-frame">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-brand">
+          <span class="sidebar-logo"><i data-lucide="audio-waveform"></i></span>
+          <div><strong>声工坊</strong><span>Voice Studio</span></div>
         </div>
 
-        <label class="sr-only" for="textInput">需要转换的文字</label>
-        <div class="text-editor">
-          <textarea id="textInput" maxlength="{{ max_text_length }}" placeholder="输入需要转换成语音的中文内容……">你好，欢迎使用微软 Edge 在线语音合成。</textarea>
-          <button class="icon-button clear-text-button" id="clearTextButton" type="button" title="清空文字" aria-label="清空文字">
-            <i data-lucide="eraser"></i>
-          </button>
+        <nav class="sidebar-nav" aria-label="主要导航">
+          <button class="sidebar-link is-active" id="sidebarWorkspaceButton" type="button" data-scroll-target="workspaceTop"><i data-lucide="layout-dashboard"></i><span>语音工作台</span></button>
+          <button class="sidebar-link" id="sidebarVoiceCatalogButton" type="button"><i data-lucide="library-big"></i><span>音色展示</span></button>
+          <button class="sidebar-link" id="sidebarApiButton" type="button"><i data-lucide="braces"></i><span>API 接口</span></button>
+          <button class="sidebar-link" id="sidebarAdvancedButton" type="button"><i data-lucide="settings-2"></i><span>高级设置</span></button>
+        </nav>
+
+        <div class="sidebar-status">
+          <span class="status-icon"><i data-lucide="shield-check"></i></span>
+          <div><strong>本地模式</strong><span>数据仅保存在本机</span></div>
         </div>
-
-        <div class="settings-grid">
-          <div class="field">
-            <span class="field-label" id="localeFieldLabel">语言</span>
-            <div class="ui-select" id="localeSelect">
-              <button class="ui-select-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="localeFieldLabel localeSelectValue">
-                <span class="ui-select-value" id="localeSelectValue">
-                  <strong>普通话</strong><small>中国大陆</small>
-                </span>
-                <i data-lucide="chevrons-up-down"></i>
-              </button>
-              <div class="ui-select-popover" hidden>
-                <div class="ui-select-options" id="localeOptions" role="listbox" aria-label="选择语言"></div>
-              </div>
-            </div>
-          </div>
-
-          <div class="field">
-            <span class="field-label" id="voiceFieldLabel">音色</span>
-            <div class="ui-select" id="voiceSelect">
-              <button class="ui-select-trigger" type="button" disabled aria-haspopup="listbox" aria-expanded="false" aria-labelledby="voiceFieldLabel voiceSelectValue">
-                <span class="ui-select-value" id="voiceSelectValue">
-                  <strong>正在载入音色</strong><small>请稍候</small>
-                </span>
-                <i data-lucide="chevrons-up-down"></i>
-              </button>
-              <div class="ui-select-popover voice-select-popover" hidden>
-                <label class="ui-select-search">
-                  <i data-lucide="search"></i>
-                  <input id="voiceSearchInput" type="search" placeholder="搜索中文名、性别或地区" autocomplete="off">
-                </label>
-                <div class="ui-select-options" id="voiceOptions" role="listbox" aria-label="选择音色"></div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="voice-summary" id="voiceSummary" aria-live="polite">
-          <span class="voice-avatar" id="voiceAvatar">声</span>
-          <div class="voice-summary-copy">
-            <strong id="voiceDisplayName">载入音色中</strong>
-            <span id="voiceDescription">请稍候</span>
-          </div>
-          <code id="voiceCode"></code>
-        </div>
-
-        <div class="controls-grid">
-          <label class="field range-field">
-            <span>语速 <output id="rateOutput">0%</output></span>
-            <input id="rateInput" type="range" min="-100" max="100" value="0" step="5">
-          </label>
-          <label class="field range-field">
-            <span>音调 <output id="pitchOutput">0 Hz</output></span>
-            <input id="pitchInput" type="range" min="-100" max="100" value="0" step="5">
-          </label>
-          <label class="field range-field">
-            <span>音量 <output id="volumeOutput">0%</output></span>
-            <input id="volumeInput" type="range" min="-100" max="100" value="0" step="5">
-          </label>
-        </div>
-
-        <div class="editor-actions">
-          <button class="button button-primary" id="generateButton" type="button" disabled>
-            <i class="button-icon" data-lucide="play"></i>
-            <i class="button-loader" data-lucide="loader-circle"></i>
-            <span>生成并试听</span>
-          </button>
-          <span class="error-message" id="errorMessage" role="alert"></span>
-        </div>
-      </section>
-
-      <aside class="output-pane">
-        <section class="preview-section" aria-labelledby="previewTitle">
-          <div class="section-heading compact-heading">
-            <div>
-              <span class="eyebrow">当前结果</span>
-              <h2 id="previewTitle">音频试听</h2>
-            </div>
-          </div>
-
-          <div class="empty-state" id="emptyState">
-            <span class="empty-icon"><i data-lucide="headphones"></i></span>
-            <p>生成后的音频会在这里自动播放</p>
-          </div>
-
-          <div class="generation-state" id="generationState" hidden aria-live="polite">
-            <div class="sound-loader" aria-hidden="true">
-              <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
-            </div>
-            <strong>正在合成自然语音</strong>
-            <span>已等待 <b id="generationSeconds">0</b> 秒</span>
-          </div>
-
-          <div class="audio-result" id="audioResult" hidden>
-            <div class="result-topline">
-              <div class="result-artwork"><i data-lucide="waveform"></i></div>
-              <div class="result-copy">
-                <strong id="resultTitle">语音结果</strong>
-                <span id="resultMeta"></span>
-              </div>
-            </div>
-            <audio id="audioPlayer" controls preload="metadata"></audio>
-            <button class="button button-secondary" id="downloadButton" type="button">
-              <i data-lucide="download"></i>
-              <span>下载 MP3</span>
-            </button>
-          </div>
-        </section>
-
-        <section class="history-section" aria-labelledby="historyTitle">
-          <div class="history-heading">
-            <div>
-              <span class="eyebrow">最近 50 条</span>
-              <h2 id="historyTitle">转换记录 <span id="historyCount">0</span></h2>
-            </div>
-            <button class="icon-button" id="clearHistoryButton" type="button" title="清空转换记录" aria-label="清空转换记录" disabled>
-              <i data-lucide="trash-2"></i>
-            </button>
-          </div>
-          <div class="history-empty" id="historyEmpty">
-            <i data-lucide="history"></i>
-            <span>暂无转换记录</span>
-          </div>
-          <ol class="history-list" id="historyList"></ol>
-        </section>
       </aside>
-    </main>
+      <button class="sidebar-backdrop" id="sidebarBackdrop" type="button" aria-label="关闭菜单" hidden></button>
+
+      <div class="app-body">
+        <header class="topbar">
+          <div class="mobile-brand">
+            <span class="mobile-logo"><i data-lucide="audio-waveform"></i></span>
+            <strong>声工坊</strong>
+          </div>
+          <button class="icon-button menu-button" id="menuButton" type="button" title="打开菜单" aria-label="打开菜单"><i data-lucide="menu"></i></button>
+
+          <div class="project-summary">
+            <span id="projectSummaryLabel">当前项目</span>
+            <strong id="projectSummaryTitle">默认语音项目</strong>
+          </div>
+
+          <div class="topbar-actions">
+            <span class="connection"><span class="status-dot"></span>服务正常</span>
+            <button class="button button-quiet workspace-top-action" id="saveDraftButton" type="button"><i data-lucide="save"></i><span>保存草稿</span></button>
+            <button class="button button-primary workspace-top-action" id="topDownloadButton" type="button" disabled><i data-lucide="download"></i><span>导出音频</span></button>
+          </div>
+        </header>
+
+        <main class="content" id="workspaceTop">
+          <div class="mobile-editor-tabs" role="tablist" aria-label="编辑区域">
+            <button class="is-active" id="inputTab" type="button" role="tab" aria-selected="true" aria-controls="inputPanel">输入文本</button>
+            <button id="settingsTab" type="button" role="tab" aria-selected="false" aria-controls="settingsPanel">参数设置</button>
+          </div>
+
+          <div class="creator-grid">
+            <section class="tool-panel input-panel is-mobile-active" id="inputPanel" aria-labelledby="inputTitle">
+              <div class="panel-heading">
+                <div><span class="panel-kicker">内容</span><h2 id="inputTitle">输入文本</h2></div>
+                <span class="character-count"><strong id="characterCount">0</strong> / {{ max_text_length }}</span>
+              </div>
+              <label class="sr-only" for="textInput">需要转换的文字</label>
+              <textarea id="textInput" maxlength="{{ max_text_length }}" placeholder="输入需要转换成语音的内容……">你好，欢迎使用本地语音工作台。这里可以将文字转换成自然流畅的语音。</textarea>
+              <div class="input-footer">
+                <button class="button button-quiet compact-button" id="clearTextButton" type="button"><i data-lucide="eraser"></i><span>清空文本</span></button>
+                <span class="draft-status" id="draftStatus"></span>
+              </div>
+            </section>
+
+            <section class="tool-panel settings-panel" id="settingsPanel" aria-labelledby="settingsTitle">
+              <div class="panel-heading"><div><span class="panel-kicker">声音</span><h2 id="settingsTitle">参数设置</h2></div></div>
+
+              <div class="voice-library" id="voiceLibrary">
+                <div class="field-label">常用音色</div>
+                <div class="voice-presets" id="voicePresets" aria-label="常用音色"></div>
+              </div>
+
+              <div class="settings-grid">
+                <div class="field">
+                  <span class="field-label" id="localeFieldLabel">语言</span>
+                  <div class="ui-select" id="localeSelect">
+                    <button class="ui-select-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="localeFieldLabel localeSelectValue">
+                      <span class="select-prefix"><i data-lucide="globe-2"></i></span>
+                      <span class="ui-select-value" id="localeSelectValue"><strong>普通话</strong><small>中国大陆</small></span>
+                      <i data-lucide="chevron-down"></i>
+                    </button>
+                    <div class="ui-select-popover" hidden><div class="ui-select-options" role="listbox" aria-label="选择语言"></div></div>
+                  </div>
+                </div>
+
+                <div class="field">
+                  <span class="field-label" id="voiceFieldLabel">全部音色</span>
+                  <div class="ui-select" id="voiceSelect">
+                    <button class="ui-select-trigger" type="button" disabled aria-haspopup="listbox" aria-expanded="false" aria-labelledby="voiceFieldLabel voiceSelectValue">
+                      <span class="select-prefix voice-prefix" id="selectVoiceAvatar">声</span>
+                      <span class="ui-select-value" id="voiceSelectValue"><strong>正在载入音色</strong><small>请稍候</small></span>
+                      <i data-lucide="chevron-down"></i>
+                    </button>
+                    <div class="ui-select-popover voice-select-popover" hidden>
+                      <label class="ui-select-search"><i data-lucide="search"></i><input id="voiceSearchInput" type="search" placeholder="搜索中文名、性别或地区" autocomplete="off"></label>
+                      <div class="ui-select-options" role="listbox" aria-label="选择音色"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="voice-summary" id="voiceSummary" aria-live="polite">
+                <span class="voice-avatar" id="voiceAvatar">声</span>
+                <div class="voice-summary-copy"><strong id="voiceDisplayName">载入音色中</strong><span id="voiceDescription">请稍候</span></div>
+                <code id="voiceCode"></code>
+              </div>
+
+              <div class="controls-grid">
+                <label class="field range-field"><span>语速 <output id="rateOutput">0%</output></span><input id="rateInput" type="range" min="-100" max="100" value="0" step="5"></label>
+                <label class="field range-field"><span>音调 <output id="pitchOutput">0 Hz</output></span><input id="pitchInput" type="range" min="-100" max="100" value="0" step="5"></label>
+                <label class="field range-field"><span>音量 <output id="volumeOutput">0%</output></span><input id="volumeInput" type="range" min="-100" max="100" value="0" step="5"></label>
+              </div>
+
+              <div class="generate-area">
+                <button class="button button-generate" id="generateButton" type="button" disabled>
+                  <i class="button-icon" data-lucide="audio-waveform"></i><i class="button-loader" data-lucide="loader-circle"></i><span>生成并试听</span>
+                </button>
+                <div class="error-feedback" id="errorFeedback" hidden>
+                  <span class="error-message" id="errorMessage" role="alert"></span>
+                  <span class="error-detail-control" id="errorDetailControl" hidden>
+                    <button class="error-detail-button" id="errorDetailButton" type="button" aria-label="查看接口错误详情" aria-expanded="false" aria-describedby="errorDetailTooltip"><i data-lucide="circle-alert"></i></button>
+                    <span class="error-detail-tooltip" id="errorDetailTooltip" role="tooltip"></span>
+                  </span>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <section class="tool-panel player-panel" id="previewPanel" aria-labelledby="previewTitle">
+            <div class="panel-heading player-heading">
+              <div><span class="panel-kicker">预览</span><h2 id="previewTitle">试听播放</h2></div>
+              <button class="icon-button" id="downloadButton" type="button" title="下载 MP3" aria-label="下载 MP3" disabled><i data-lucide="download"></i></button>
+            </div>
+
+            <div class="empty-state" id="emptyState"><span class="empty-icon"><i data-lucide="headphones"></i></span><p>生成后的音频会在这里自动播放</p></div>
+            <div class="generation-state" id="generationState" hidden aria-live="polite">
+              <div class="sound-loader" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+              <strong>正在合成自然语音</strong><span>已等待 <b id="generationSeconds">0</b> 秒</span>
+            </div>
+
+            <div class="audio-result" id="audioResult" hidden>
+              <div class="current-voice"><span class="result-avatar" id="resultAvatar">声</span><div class="result-copy"><strong id="resultTitle">语音结果</strong><span id="resultMeta"></span></div></div>
+              <div class="waveform" id="waveformBars" aria-hidden="true"></div>
+              <div class="player-controls">
+                <button class="player-button" id="playerToggle" type="button" aria-label="播放"><i class="play-icon" data-lucide="play"></i><i class="pause-icon" data-lucide="pause"></i></button>
+                <span class="time-label"><b id="currentTime">00:00</b> / <span id="durationTime">00:00</span></span>
+                <input class="progress-slider" id="progressSlider" type="range" min="0" max="1000" value="0" aria-label="播放进度">
+                <i class="volume-icon" data-lucide="volume-2"></i>
+                <input class="volume-slider" id="playerVolume" type="range" min="0" max="1" value="1" step="0.05" aria-label="播放音量">
+              </div>
+              <audio id="audioPlayer" preload="metadata" hidden></audio>
+            </div>
+          </section>
+
+          <section class="tool-panel history-panel" id="historyPanel" aria-labelledby="historyTitle">
+            <div class="panel-heading history-heading">
+              <div><span class="panel-kicker">最近 50 条</span><h2 id="historyTitle">历史生成记录 <span id="historyCount">0</span></h2></div>
+              <button class="button button-quiet compact-button" id="clearHistoryButton" type="button" disabled><i data-lucide="trash-2"></i><span>清空记录</span></button>
+            </div>
+            <div class="history-columns" aria-hidden="true"><span>文本内容</span><span>音色</span><span>参数</span><span>创建时间</span><span>操作</span></div>
+            <div class="history-empty" id="historyEmpty"><i data-lucide="history"></i><span>暂无转换记录</span></div>
+            <ol class="history-list" id="historyList"></ol>
+          </section>
+        </main>
+
+        <main class="content voice-catalog-view" id="voiceCatalogView" hidden>
+          <section class="catalog-heading" aria-labelledby="voiceCatalogTitle">
+            <div><span class="panel-kicker">全部音色</span><h1 id="voiceCatalogTitle">音色展示</h1><p>查看语言、内容类型、声音风格与推荐使用场景</p></div>
+            <span class="catalog-total"><strong id="catalogTotalCount">0</strong> 个音色</span>
+          </section>
+
+          <section class="catalog-toolbar" aria-label="音色筛选">
+            <label class="catalog-search"><i data-lucide="search"></i><input id="catalogSearchInput" type="search" placeholder="搜索音色名称、语言或地区" autocomplete="off"></label>
+            <div class="ui-select catalog-language-select" id="catalogLanguageSelect">
+              <button class="ui-select-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-label="筛选语言">
+                <span class="select-prefix"><i data-lucide="languages"></i></span>
+                <span class="ui-select-value"><strong>全部语言</strong><small>正在载入</small></span>
+                <i data-lucide="chevron-down"></i>
+              </button>
+              <div class="ui-select-popover" hidden><div class="ui-select-options" role="listbox" aria-label="按语言筛选音色"></div></div>
+            </div>
+            <div class="catalog-gender-filter" role="group" aria-label="按性别筛选">
+              <button class="is-selected" type="button" data-catalog-gender="">全部</button>
+              <button type="button" data-catalog-gender="Female">女声</button>
+              <button type="button" data-catalog-gender="Male">男声</button>
+            </div>
+          </section>
+
+          <section class="catalog-results" aria-live="polite">
+            <div class="catalog-results-summary"><span>筛选结果</span><strong id="catalogResultCount">0</strong></div>
+            <div class="catalog-columns" aria-hidden="true"><span>音色</span><span>语言</span><span>性别</span><span>内容类型</span><span>声音风格</span><span>推荐场景</span><span>操作</span></div>
+            <div class="catalog-loading" id="catalogLoading"><i data-lucide="loader-circle"></i><span>正在载入全部音色</span></div>
+            <div class="catalog-error" id="catalogError" hidden><i data-lucide="triangle-alert"></i><span id="catalogErrorMessage">音色载入失败</span><button class="button button-quiet compact-button" id="catalogRetryButton" type="button">重新载入</button></div>
+            <div class="catalog-empty" id="catalogEmpty" hidden><i data-lucide="search-x"></i><span>没有匹配的音色</span></div>
+            <ol class="catalog-list" id="catalogList"></ol>
+          </section>
+        </main>
+
+        <nav class="mobile-bottom-nav" aria-label="手机导航">
+          <button class="is-active" type="button" data-scroll-target="workspaceTop"><i data-lucide="house"></i><span>工作台</span></button>
+          <button class="bottom-generate" id="bottomGenerateButton" type="button" aria-label="生成语音"><i data-lucide="audio-waveform"></i></button>
+          <button id="bottomApiButton" type="button"><i data-lucide="braces"></i><span>API</span></button>
+        </nav>
+      </div>
+    </div>
 
     <dialog id="apiDialog">
-      <div class="dialog-heading">
-        <div><span class="eyebrow">HTTP API</span><h2>生成语音</h2></div>
-        <button class="icon-button" id="closeApiButton" type="button" aria-label="关闭"><i data-lucide="x"></i></button>
-      </div>
+      <div class="dialog-heading"><div><span class="panel-kicker">HTTP API</span><h2>生成语音</h2></div><button class="icon-button" id="closeApiButton" type="button" aria-label="关闭"><i data-lucide="x"></i></button></div>
       <div class="endpoint"><span>POST</span><code>/api/synthesize</code></div>
       <pre><code id="curlExample">curl -X POST http://127.0.0.1:8765/api/synthesize \
   -H 'Content-Type: application/json' \
   -d '{
-    "text": "你好，欢迎使用 Edge TTS。",
+    "text": "你好，欢迎使用语音工作台。",
     "voice": "zh-CN-XiaoxiaoNeural",
     "rate": "+0%",
     "volume": "+0%",
     "pitch": "+0Hz"
   }' \
   --output speech.mp3</code></pre>
-      <div class="dialog-actions">
-        <button class="button button-secondary" id="copyApiButton" type="button"><i data-lucide="copy"></i><span>复制命令</span></button>
-      </div>
-      <div class="api-links">
-        <code>GET /api/voices?locale=zh-CN</code>
-        <code>GET /api/history</code>
-        <code>GET /api/health</code>
-      </div>
+      <div class="dialog-actions"><button class="button button-quiet" id="copyApiButton" type="button"><i data-lucide="copy"></i><span>复制命令</span></button></div>
+      <div class="api-links"><code>GET /api/voices?locale=zh-CN</code><code>GET /api/history</code><code>GET /api/health</code></div>
     </dialog>
 
     <dialog class="confirm-dialog" id="confirmDialog">
-      <div class="confirm-icon"><i data-lucide="triangle-alert"></i></div>
-      <h2 id="confirmTitle">确认删除</h2>
-      <p id="confirmMessage"></p>
-      <div class="confirm-actions">
-        <button class="button button-secondary" id="cancelConfirmButton" type="button">取消</button>
-        <button class="button button-danger" id="acceptConfirmButton" type="button">确认删除</button>
+      <div class="confirm-icon"><i data-lucide="triangle-alert"></i></div><h2 id="confirmTitle">确认删除</h2><p id="confirmMessage"></p>
+      <div class="confirm-actions"><button class="button button-quiet" id="cancelConfirmButton" type="button">取消</button><button class="button button-danger" id="acceptConfirmButton" type="button">确认删除</button></div>
+    </dialog>
+
+    <dialog class="advanced-dialog" id="advancedDialog">
+      <div class="dialog-heading">
+        <div><span class="panel-kicker">辅助功能</span><h2>高级设置</h2></div>
+        <button class="icon-button" id="closeAdvancedButton" type="button" aria-label="关闭高级设置"><i data-lucide="x"></i></button>
+      </div>
+
+      <section class="advanced-section" aria-labelledby="displaySettingsTitle">
+        <div class="advanced-section-heading">
+          <span class="advanced-section-icon"><i data-lucide="scan-text"></i></span>
+          <div><h3 id="displaySettingsTitle">字体与界面大小</h3><p>同时放大文字、按钮和表单</p></div>
+          <output id="interfaceZoomOutput" for="interfaceZoomInput">100%</output>
+        </div>
+        <div class="zoom-control">
+          <button class="icon-button zoom-step-button" id="zoomOutButton" type="button" aria-label="缩小界面"><i data-lucide="minus"></i></button>
+          <input id="interfaceZoomInput" type="range" min="100" max="150" value="100" step="5" aria-label="字体与界面大小">
+          <button class="icon-button zoom-step-button" id="zoomInButton" type="button" aria-label="放大界面"><i data-lucide="plus"></i></button>
+        </div>
+      </section>
+
+      <section class="advanced-section accessibility-options" aria-label="显示辅助选项">
+        <label class="setting-toggle">
+          <span class="advanced-section-icon"><i data-lucide="contrast"></i></span>
+          <span class="setting-toggle-copy"><strong>高对比度</strong><small>增强文字和边界的辨识度</small></span>
+          <input id="highContrastInput" type="checkbox"><span class="toggle-track" aria-hidden="true"></span>
+        </label>
+        <label class="setting-toggle">
+          <span class="advanced-section-icon"><i data-lucide="sparkles"></i></span>
+          <span class="setting-toggle-copy"><strong>减少动画</strong><small>降低界面动态效果</small></span>
+          <input id="reduceMotionInput" type="checkbox"><span class="toggle-track" aria-hidden="true"></span>
+        </label>
+      </section>
+
+      <section class="advanced-section system-information" aria-labelledby="systemInformationTitle">
+        <div class="advanced-section-heading compact-heading">
+          <span class="advanced-section-icon"><i data-lucide="monitor-cog"></i></span>
+          <div><h3 id="systemInformationTitle">系统信息</h3></div>
+        </div>
+        <dl><div><dt>当前系统</dt><dd>{{ system_version }}</dd></div><div><dt>应用版本</dt><dd>v{{ app_version }}</dd></div></dl>
+      </section>
+
+      <div class="advanced-actions">
+        <span id="advancedSaveStatus" aria-live="polite">设置自动保存在本机</span>
+        <button class="button button-quiet" id="resetAdvancedButton" type="button"><i data-lucide="rotate-ccw"></i><span>恢复默认</span></button>
+        <button class="button button-primary" id="doneAdvancedButton" type="button">完成</button>
       </div>
     </dialog>
 
-    <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+    <script src="{{ url_for('static', filename='vendor/lucide.min.js') }}"></script>
     <script src="{{ url_for('static', filename='app.js') }}"></script>
   </body>
 </html>

@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 import os
+import platform
 import re
 import threading
 import time
@@ -99,7 +100,7 @@ def _get_voices() -> List[Dict[str, Any]]:
         return voices
 
 
-def _compact_voice(voice: Dict[str, Any]) -> Dict[str, str]:
+def _compact_voice(voice: Dict[str, Any]) -> Dict[str, Any]:
     short_name = voice.get("ShortName", "")
     locale = voice.get("Locale", "")
     gender = voice.get("Gender", "")
@@ -108,9 +109,22 @@ def _compact_voice(voice: Dict[str, Any]) -> Dict[str, str]:
         "displayName": _voice_display_name(short_name),
         "friendlyName": voice.get("FriendlyName", short_name),
         "locale": locale,
-        "localeName": LOCALE_DISPLAY_NAMES.get(locale, locale),
+        "localeName": LOCALE_DISPLAY_NAMES.get(
+            locale, str(voice.get("LocaleName", locale))
+        ),
         "gender": gender,
         "genderName": "女声" if gender == "Female" else "男声" if gender == "Male" else gender,
+        "contentCategories": [
+            str(item).strip()
+            for item in voice.get("VoiceTag", {}).get("ContentCategories", [])
+            if str(item).strip()
+        ],
+        "personalities": [
+            str(item).strip()
+            for item in voice.get("VoiceTag", {}).get("VoicePersonalities", [])
+            if str(item).strip()
+        ],
+        "status": str(voice.get("Status", "")),
     }
 
 
@@ -119,6 +133,23 @@ def _voice_display_name(short_name: str) -> str:
         return VOICE_DISPLAY_NAMES[short_name]
     name = short_name.rsplit("-", 1)[-1]
     return re.sub(r"Neural$", "", name) or short_name
+
+
+def _download_timestamp(created_at: Any) -> str:
+    try:
+        value = str(created_at)
+        if value.endswith("Z"):
+            value = f"{value[:-1]}+00:00"
+        return datetime.fromisoformat(value).strftime("%Y%m%d-%H%M%S")
+    except (TypeError, ValueError):
+        return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def _cached_voice_gender(short_name: str) -> str:
+    for voice in _voice_cache[1]:
+        if voice.get("ShortName") == short_name:
+            return str(voice.get("Gender", ""))
+    return ""
 
 
 def _ensure_data_dirs() -> None:
@@ -165,6 +196,7 @@ def _save_history(audio: bytes, options: Dict[str, str]) -> Dict[str, Any]:
         "text": options["text"],
         "voice": options["voice"],
         "voiceName": _voice_display_name(options["voice"]),
+        "voiceGender": _cached_voice_gender(options["voice"]),
         "rate": options["rate"],
         "volume": options["volume"],
         "pitch": options["pitch"],
@@ -250,11 +282,13 @@ async def _synthesize_audio(options: Dict[str, str]) -> bytes:
 
 @app.get("/")
 def index() -> str:
+    macos_version = platform.mac_ver()[0]
     return render_template(
         "index.html",
         app_version=APP_VERSION,
         default_voice=DEFAULT_VOICE,
         max_text_length=MAX_TEXT_LENGTH,
+        system_version=f"macOS {macos_version}" if macos_version else platform.system(),
     )
 
 
@@ -269,8 +303,14 @@ def voices() -> Any:
     try:
         available = _get_voices()
     except Exception as exc:
-        app.logger.exception("Unable to fetch Edge TTS voices")
-        return jsonify({"error": f"获取微软音色失败：{exc}"}), 502
+        app.logger.exception("Unable to fetch online voices")
+        return jsonify({"error": f"获取在线音色失败：{exc}"}), 502
+
+    locale_counts: Dict[str, int] = {}
+    for voice in available:
+        voice_locale = str(voice.get("Locale", ""))
+        locale_counts[voice_locale] = locale_counts.get(voice_locale, 0) + 1
+    total_voice_count = len(available)
 
     if locale:
         available = [
@@ -278,7 +318,13 @@ def voices() -> Any:
             for voice in available
             if voice.get("Locale", "").lower().startswith(locale)
         ]
-    return jsonify({"voices": [_compact_voice(voice) for voice in available]})
+    return jsonify(
+        {
+            "voices": [_compact_voice(voice) for voice in available],
+            "localeCounts": locale_counts,
+            "totalVoiceCount": total_voice_count,
+        }
+    )
 
 
 @app.post("/api/synthesize")
@@ -293,13 +339,13 @@ def synthesize() -> Any:
             _synthesize_audio(options), timeout=SYNTHESIS_TIMEOUT_SECONDS
         )
     except asyncio.TimeoutError:
-        return jsonify({"error": "微软语音服务响应超时，请稍后重试"}), 504
+        return jsonify({"error": "在线语音服务响应超时，请稍后重试"}), 504
     except Exception as exc:
-        app.logger.exception("Edge TTS synthesis failed")
+        app.logger.exception("Online speech synthesis failed")
         return jsonify({"error": f"语音生成失败：{exc}"}), 502
 
     if not audio:
-        return jsonify({"error": "微软语音服务没有返回音频"}), 502
+        return jsonify({"error": "在线语音服务没有返回音频"}), 502
 
     try:
         record = _save_history(audio, options)
@@ -311,7 +357,7 @@ def synthesize() -> Any:
         io.BytesIO(audio),
         mimetype="audio/mpeg",
         as_attachment=False,
-        download_name="edge-tts.mp3",
+        download_name="voice-studio.mp3",
         max_age=0,
     )
     response.headers["Cache-Control"] = "no-store"
@@ -324,6 +370,14 @@ def synthesize() -> Any:
 def conversion_history() -> Any:
     with _history_lock:
         items = _read_history_unlocked()
+    items = [
+        {
+            **item,
+            "voiceGender": item.get("voiceGender")
+            or _cached_voice_gender(str(item.get("voice", ""))),
+        }
+        for item in items
+    ]
     return jsonify({"history": items, "limit": MAX_HISTORY_ITEMS})
 
 
@@ -336,11 +390,12 @@ def history_audio(record_id: str) -> Any:
     audio_path = AUDIO_DIR / f"{record_id}.mp3"
     if not audio_path.is_file():
         return jsonify({"error": "音频文件不存在"}), 404
+    timestamp = _download_timestamp(record.get("createdAt"))
     return send_file(
         audio_path,
         mimetype="audio/mpeg",
         as_attachment=request.args.get("download") == "1",
-        download_name=f"edge-tts-{record['voiceName']}-{record_id[:8]}.mp3",
+        download_name=f"voice-studio-{record['voiceName']}-{timestamp}.mp3",
         max_age=0,
     )
 
@@ -375,6 +430,6 @@ def request_too_large(_: Exception) -> Any:
 
 
 if __name__ == "__main__":
-    host = os.environ.get("EDGE_TTS_HOST", "127.0.0.1")
-    port = int(os.environ.get("EDGE_TTS_PORT", "8765"))
+    host = os.environ.get("VOICE_STUDIO_HOST", "127.0.0.1")
+    port = int(os.environ.get("VOICE_STUDIO_PORT", "8765"))
     app.run(host=host, port=port, debug=False, threaded=True)

@@ -7,8 +7,14 @@ const elements = {
   voiceDisplayName: document.querySelector("#voiceDisplayName"),
   voiceDescription: document.querySelector("#voiceDescription"),
   voiceCode: document.querySelector("#voiceCode"),
+  selectVoiceAvatar: document.querySelector("#selectVoiceAvatar"),
+  voicePresets: document.querySelector("#voicePresets"),
   generateButton: document.querySelector("#generateButton"),
+  errorFeedback: document.querySelector("#errorFeedback"),
   errorMessage: document.querySelector("#errorMessage"),
+  errorDetailControl: document.querySelector("#errorDetailControl"),
+  errorDetailButton: document.querySelector("#errorDetailButton"),
+  errorDetailTooltip: document.querySelector("#errorDetailTooltip"),
   emptyState: document.querySelector("#emptyState"),
   generationState: document.querySelector("#generationState"),
   generationSeconds: document.querySelector("#generationSeconds"),
@@ -17,12 +23,43 @@ const elements = {
   resultTitle: document.querySelector("#resultTitle"),
   resultMeta: document.querySelector("#resultMeta"),
   downloadButton: document.querySelector("#downloadButton"),
+  topDownloadButton: document.querySelector("#topDownloadButton"),
+  bottomGenerateButton: document.querySelector("#bottomGenerateButton"),
+  playerToggle: document.querySelector("#playerToggle"),
+  progressSlider: document.querySelector("#progressSlider"),
+  playerVolume: document.querySelector("#playerVolume"),
+  currentTime: document.querySelector("#currentTime"),
+  durationTime: document.querySelector("#durationTime"),
+  waveformBars: document.querySelector("#waveformBars"),
+  resultAvatar: document.querySelector("#resultAvatar"),
+  draftStatus: document.querySelector("#draftStatus"),
   historyList: document.querySelector("#historyList"),
   historyEmpty: document.querySelector("#historyEmpty"),
   historyCount: document.querySelector("#historyCount"),
   clearHistoryButton: document.querySelector("#clearHistoryButton"),
   apiDialog: document.querySelector("#apiDialog"),
   confirmDialog: document.querySelector("#confirmDialog"),
+  advancedDialog: document.querySelector("#advancedDialog"),
+  interfaceZoomInput: document.querySelector("#interfaceZoomInput"),
+  interfaceZoomOutput: document.querySelector("#interfaceZoomOutput"),
+  zoomOutButton: document.querySelector("#zoomOutButton"),
+  zoomInButton: document.querySelector("#zoomInButton"),
+  highContrastInput: document.querySelector("#highContrastInput"),
+  reduceMotionInput: document.querySelector("#reduceMotionInput"),
+  advancedSaveStatus: document.querySelector("#advancedSaveStatus"),
+  workspaceView: document.querySelector("#workspaceTop"),
+  voiceCatalogView: document.querySelector("#voiceCatalogView"),
+  projectSummaryLabel: document.querySelector("#projectSummaryLabel"),
+  projectSummaryTitle: document.querySelector("#projectSummaryTitle"),
+  catalogSearchInput: document.querySelector("#catalogSearchInput"),
+  catalogLanguageSelect: document.querySelector("#catalogLanguageSelect"),
+  catalogTotalCount: document.querySelector("#catalogTotalCount"),
+  catalogResultCount: document.querySelector("#catalogResultCount"),
+  catalogLoading: document.querySelector("#catalogLoading"),
+  catalogError: document.querySelector("#catalogError"),
+  catalogErrorMessage: document.querySelector("#catalogErrorMessage"),
+  catalogEmpty: document.querySelector("#catalogEmpty"),
+  catalogList: document.querySelector("#catalogList"),
 };
 
 const defaultVoice = document.body.dataset.defaultVoice;
@@ -36,7 +73,61 @@ const languageOptions = [
   { value: "ko-KR", label: "韩语", description: "韩国" },
   { value: "", label: "全部语言", description: "显示所有可用音色" },
 ];
+const contentCategoryNames = {
+  General: "通用",
+  Novel: "小说",
+  News: "新闻",
+  Conversation: "对话",
+  Copilot: "智能助手",
+  Cartoon: "动画角色",
+  Dialect: "方言",
+  Sports: "体育",
+};
+const personalityNames = {
+  Friendly: "友好",
+  Positive: "积极",
+  Warm: "温暖",
+  Lively: "活泼",
+  Pleasant: "悦耳",
+  Confident: "自信",
+  Passion: "热情",
+  Cute: "可爱",
+  Reliable: "可靠",
+  Expressive: "有表现力",
+  Caring: "关怀",
+  Authentic: "自然",
+  Honest: "真诚",
+  Cheerful: "开朗",
+  Clear: "清晰",
+  Conversational: "对话感",
+  Approachable: "亲切",
+  Casual: "轻松",
+  Sincere: "诚恳",
+  Rational: "理性",
+  Sunshine: "阳光",
+  Professional: "专业",
+  Humorous: "幽默",
+  Bright: "明快",
+  Authority: "权威",
+  Considerate: "体贴",
+  Comfort: "舒缓",
+};
+let catalogLanguageDisplayNames = null;
+let catalogRegionDisplayNames = null;
+try {
+  catalogLanguageDisplayNames = new Intl.DisplayNames(["zh-CN"], { type: "language" });
+  catalogRegionDisplayNames = new Intl.DisplayNames(["zh-CN"], { type: "region" });
+} catch (_) {
+  catalogLanguageDisplayNames = null;
+  catalogRegionDisplayNames = null;
+}
+const catalogLocaleNameCache = new Map();
 const voicesByName = new Map();
+const avatarIndexes = {
+  female: [0, 2, 4, 6, 8],
+  male: [1, 3, 5, 7],
+  neutral: [0, 1, 2, 3, 4, 5, 6, 7, 8],
+};
 let generatedBlobUrl = null;
 let currentHistoryId = null;
 let historyItems = [];
@@ -47,6 +138,20 @@ let voiceRequestSequence = 0;
 let activeSelectControl = null;
 let localeControl = null;
 let voiceControl = null;
+let catalogLanguageControl = null;
+let catalogVoices = [];
+let catalogGender = "";
+let catalogRenderTimer = null;
+let audioContext = null;
+let audioAnalyser = null;
+let audioSource = null;
+let frequencyData = null;
+let spectrumFrame = null;
+let advancedSaveTimer = null;
+
+const draftStorageKey = "voice-studio-draft-v1";
+const accessibilityStorageKey = "voice-studio-accessibility-v1";
+const accessibilityDefaults = { zoom: 100, highContrast: false, reduceMotion: false };
 
 function signedValue(value, suffix) {
   const number = Number(value);
@@ -57,8 +162,63 @@ function refreshIcons() {
   if (window.lucide) window.lucide.createIcons();
 }
 
-function showError(message = "") {
+function hashVoiceName(value) {
+  let hash = 2166136261;
+  for (const character of value) {
+    hash ^= character.codePointAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function avatarIndexForVoice(voiceOrName, gender = "") {
+  const voice = typeof voiceOrName === "object" ? voiceOrName : voicesByName.get(voiceOrName);
+  const shortName = voice?.shortName || String(voiceOrName || "voice");
+  const normalizedGender = String(voice?.gender || gender).toLocaleLowerCase("en-US");
+  const group = normalizedGender === "female"
+    ? avatarIndexes.female
+    : normalizedGender === "male" ? avatarIndexes.male : avatarIndexes.neutral;
+  return group[hashVoiceName(shortName) % group.length];
+}
+
+function applyVoiceAvatar(element, voiceOrName, gender = "") {
+  const index = avatarIndexForVoice(voiceOrName, gender);
+  element.classList.add("voice-avatar-image");
+  element.style.setProperty("--voice-avatar-x", `${(index % 3) * 50}%`);
+  element.style.setProperty("--voice-avatar-y", `${Math.floor(index / 3) * 50}%`);
+  element.textContent = "";
+  element.setAttribute("aria-hidden", "true");
+  return element;
+}
+
+function showError(message = "", detail = "") {
   elements.errorMessage.textContent = message;
+  elements.errorFeedback.hidden = !message;
+  elements.errorDetailControl.hidden = !detail;
+  elements.errorDetailTooltip.textContent = detail;
+  if (!detail) {
+    elements.errorDetailControl.classList.remove("is-open");
+    elements.errorDetailButton.setAttribute("aria-expanded", "false");
+  }
+}
+
+function responseError(response, payload, fallbackMessage) {
+  const detail = payload?.error || `HTTP ${response.status} ${response.statusText}`.trim();
+  const message = response.status >= 500
+    ? "请求异常，请检查输入内容和音色是否正确"
+    : detail || fallbackMessage;
+  const error = new Error(message);
+  error.detail = detail;
+  return error;
+}
+
+async function readErrorPayload(response) {
+  const body = await response.text();
+  try {
+    return JSON.parse(body);
+  } catch (_) {
+    return { error: body.trim().slice(0, 1200) || `HTTP ${response.status}` };
+  }
 }
 
 function updateCharacterCount() {
@@ -135,7 +295,17 @@ function createUiSelect(root, onChange) {
 
       const check = document.createElement("i");
       check.dataset.lucide = "check";
-      item.append(copy, check);
+      if (Number.isInteger(option.avatarIndex)) {
+        const avatar = document.createElement("span");
+        avatar.className = "ui-select-option-avatar voice-avatar-image";
+        avatar.style.setProperty("--voice-avatar-x", `${(option.avatarIndex % 3) * 50}%`);
+        avatar.style.setProperty("--voice-avatar-y", `${Math.floor(option.avatarIndex / 3) * 50}%`);
+        avatar.setAttribute("aria-hidden", "true");
+        item.classList.add("has-avatar");
+        item.append(avatar, copy, check);
+      } else {
+        item.append(copy, check);
+      }
       item.addEventListener("click", () => selectValue(option.value, true));
       optionsElement.append(item);
     }
@@ -238,6 +408,7 @@ function createUiSelect(root, onChange) {
 
 function setBusy(busy) {
   elements.generateButton.disabled = busy || !voiceControl.value;
+  elements.bottomGenerateButton.disabled = busy || !voiceControl.value;
   elements.generateButton.classList.toggle("is-loading", busy);
   elements.generateButton.querySelector("span").textContent = busy ? "正在生成" : "生成并试听";
 
@@ -266,39 +437,327 @@ function selectedVoice() {
 function updateVoiceSummary() {
   const voice = selectedVoice();
   if (!voice) return;
-  elements.voiceAvatar.textContent = voice.displayName.slice(0, 1);
+  applyVoiceAvatar(elements.voiceAvatar, voice);
+  applyVoiceAvatar(elements.selectVoiceAvatar, voice);
   elements.voiceDisplayName.textContent = voice.displayName;
   elements.voiceDescription.textContent = `${voice.genderName} · ${voice.localeName}`;
   elements.voiceCode.textContent = voice.shortName;
+  for (const preset of elements.voicePresets.querySelectorAll(".voice-preset")) {
+    preset.classList.toggle("is-selected", preset.dataset.voice === voice.shortName);
+  }
+}
+
+function renderVoicePresets(voices) {
+  elements.voicePresets.replaceChildren();
+  const fragment = document.createDocumentFragment();
+  for (const voice of voices.slice(0, 4)) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "voice-preset";
+    button.dataset.voice = voice.shortName;
+    button.title = `${voice.displayName} · ${voice.genderName} · ${voice.localeName}`;
+    const avatar = document.createElement("span");
+    avatar.className = "preset-avatar";
+    applyVoiceAvatar(avatar, voice);
+    const name = document.createElement("strong");
+    name.textContent = voice.displayName;
+    const meta = document.createElement("small");
+    meta.textContent = voice.genderName;
+    button.append(avatar, name, meta);
+    button.addEventListener("click", () => voiceControl.setValue(voice.shortName, true));
+    fragment.append(button);
+  }
+  elements.voicePresets.append(fragment);
+}
+
+function updateLanguageOptionCounts(localeCounts = {}, totalVoiceCount = 0) {
+  const countedOptions = languageOptions.map((option) => {
+    const localePrefix = option.value.toLocaleLowerCase("en-US");
+    const count = localePrefix
+      ? Object.entries(localeCounts).reduce((sum, [locale, amount]) => (
+        locale.toLocaleLowerCase("en-US").startsWith(localePrefix) ? sum + Number(amount) : sum
+      ), 0)
+      : Number(totalVoiceCount);
+    return { ...option, label: `${option.label}（${count}）` };
+  });
+  localeControl.setOptions(countedOptions);
+}
+
+function catalogLanguageName(languageCode) {
+  return catalogLanguageDisplayNames?.of(languageCode) || languageCode.toUpperCase();
+}
+
+function catalogLocaleName(voice) {
+  if (catalogLocaleNameCache.has(voice.locale)) return catalogLocaleNameCache.get(voice.locale);
+  try {
+    const locale = new Intl.Locale(voice.locale);
+    const languageName = catalogLanguageName(locale.language);
+    const regionName = locale.region ? catalogRegionDisplayNames?.of(locale.region) : "";
+    const displayName = regionName ? `${languageName}（${regionName}）` : languageName;
+    catalogLocaleNameCache.set(voice.locale, displayName);
+    return displayName;
+  } catch (_) {
+    return voice.localeName || voice.locale;
+  }
+}
+
+function translatedVoiceCategories(voice) {
+  const categories = voice.contentCategories?.length ? voice.contentCategories : ["General"];
+  return categories.map((item) => contentCategoryNames[item] || item);
+}
+
+function translatedVoicePersonalities(voice) {
+  return (voice.personalities || []).map((item) => personalityNames[item] || item);
+}
+
+function recommendedVoiceUses(voice) {
+  const categories = new Set(voice.contentCategories || []);
+  const personalities = new Set(voice.personalities || []);
+  const uses = [];
+  const add = (...items) => {
+    for (const item of items) if (!uses.includes(item)) uses.push(item);
+  };
+
+  if (categories.has("News")) add("新闻", "解说");
+  if (categories.has("Novel")) add("有声书", "故事");
+  if (categories.has("Conversation")) add("对话", "播客");
+  if (categories.has("Cartoon")) add("动画", "角色配音");
+  if (categories.has("Sports")) add("体育内容");
+  if (categories.has("Dialect")) add("方言内容");
+  if (categories.has("Copilot")) add("助手交互");
+  if (["Professional", "Authority", "Clear", "Rational", "Confident"].some((item) => personalities.has(item))) add("知识解说");
+  if (["Conversational"].some((item) => personalities.has(item))) add("播客");
+  if (["Lively", "Casual", "Cheerful", "Humorous", "Bright"].some((item) => personalities.has(item))) add("Vlog");
+  if (["Warm", "Caring", "Comfort"].some((item) => personalities.has(item))) add("情感内容");
+  if (uses.length === 0) add("通用内容");
+  return uses.slice(0, 3);
+}
+
+function createCatalogTags(items, extraClass = "") {
+  const container = document.createElement("span");
+  container.className = "catalog-tags";
+  for (const item of items) {
+    const tag = document.createElement("span");
+    tag.className = `catalog-tag${extraClass ? ` ${extraClass}` : ""}`;
+    tag.textContent = item;
+    container.append(tag);
+  }
+  return container;
+}
+
+function catalogLanguageOptions(voices) {
+  const counts = new Map();
+  for (const voice of voices) {
+    const languageCode = voice.locale.split("-")[0].toLocaleLowerCase("en-US");
+    counts.set(languageCode, (counts.get(languageCode) || 0) + 1);
+  }
+  const options = [...counts.entries()].map(([value, count]) => ({
+    value,
+    label: `${catalogLanguageName(value)}（${count}）`,
+    description: `${count} 个音色`,
+  }));
+  options.sort((left, right) => left.label.localeCompare(right.label, "zh-CN"));
+  return [
+    { value: "", label: `全部语言（${voices.length}）`, description: `${options.length} 种语言` },
+    ...options,
+  ];
+}
+
+function renderVoiceCatalog() {
+  if (!catalogVoices.length) return;
+  const query = elements.catalogSearchInput.value.trim().toLocaleLowerCase("zh-CN");
+  const language = catalogLanguageControl.value;
+  const filteredVoices = catalogVoices.filter((voice) => {
+    const voiceLanguage = voice.locale.split("-")[0].toLocaleLowerCase("en-US");
+    if (language && voiceLanguage !== language) return false;
+    if (catalogGender && voice.gender !== catalogGender) return false;
+    if (!query) return true;
+    const searchable = [
+      voice.displayName,
+      voice.shortName,
+      voice.locale,
+      voice.localeName,
+      catalogLocaleName(voice),
+      ...translatedVoiceCategories(voice),
+      ...translatedVoicePersonalities(voice),
+      ...recommendedVoiceUses(voice),
+    ].join(" ").toLocaleLowerCase("zh-CN");
+    return searchable.includes(query);
+  });
+
+  elements.catalogResultCount.textContent = filteredVoices.length;
+  elements.catalogEmpty.hidden = filteredVoices.length > 0;
+  const fragment = document.createDocumentFragment();
+
+  for (const voice of filteredVoices) {
+    const row = document.createElement("li");
+    row.className = "catalog-item";
+
+    const voiceCell = document.createElement("div");
+    voiceCell.className = "catalog-voice-cell";
+    const avatar = document.createElement("span");
+    avatar.className = "catalog-avatar";
+    applyVoiceAvatar(avatar, voice);
+    const voiceCopy = document.createElement("span");
+    voiceCopy.className = "catalog-voice-copy";
+    const voiceName = document.createElement("strong");
+    voiceName.textContent = voice.displayName;
+    const voiceCode = document.createElement("code");
+    voiceCode.textContent = voice.shortName;
+    voiceCopy.append(voiceName, voiceCode);
+    voiceCell.append(avatar, voiceCopy);
+
+    const localeCell = document.createElement("div");
+    localeCell.className = "catalog-cell catalog-language";
+    localeCell.dataset.label = "语言";
+    const localeName = document.createElement("strong");
+    localeName.textContent = catalogLocaleName(voice);
+    const localeCode = document.createElement("code");
+    localeCode.textContent = voice.locale;
+    localeCell.append(localeName, localeCode);
+
+    const genderCell = document.createElement("div");
+    genderCell.className = "catalog-cell";
+    genderCell.dataset.label = "性别";
+    genderCell.textContent = voice.genderName || voice.gender;
+
+    const categoryCell = document.createElement("div");
+    categoryCell.className = "catalog-cell";
+    categoryCell.dataset.label = "内容类型";
+    categoryCell.append(createCatalogTags(translatedVoiceCategories(voice)));
+
+    const personalityCell = document.createElement("div");
+    personalityCell.className = "catalog-cell";
+    personalityCell.dataset.label = "声音风格";
+    personalityCell.append(createCatalogTags(translatedVoicePersonalities(voice).slice(0, 3), "style-tag"));
+
+    const usageCell = document.createElement("div");
+    usageCell.className = "catalog-cell";
+    usageCell.dataset.label = "推荐场景";
+    usageCell.title = "根据官方内容类别和声音风格推荐";
+    usageCell.append(createCatalogTags(recommendedVoiceUses(voice), "usage-tag"));
+
+    const useButton = document.createElement("button");
+    useButton.type = "button";
+    useButton.className = "catalog-use-button";
+    useButton.textContent = "使用";
+    useButton.title = `使用${voice.displayName}音色`;
+    useButton.addEventListener("click", () => useCatalogVoice(voice));
+
+    row.append(voiceCell, localeCell, genderCell, categoryCell, personalityCell, usageCell, useButton);
+    fragment.append(row);
+  }
+  elements.catalogList.replaceChildren(fragment);
+}
+
+function scheduleVoiceCatalogRender() {
+  clearTimeout(catalogRenderTimer);
+  catalogRenderTimer = setTimeout(renderVoiceCatalog, 80);
+}
+
+async function loadVoiceCatalog() {
+  if (catalogVoices.length) {
+    renderVoiceCatalog();
+    return;
+  }
+  elements.catalogLoading.hidden = false;
+  elements.catalogError.hidden = true;
+  elements.catalogEmpty.hidden = true;
+  elements.catalogList.replaceChildren();
+  try {
+    const response = await fetch("/api/voices");
+    if (!response.ok) {
+      const payload = await readErrorPayload(response);
+      throw responseError(response, payload, "全部音色载入失败");
+    }
+    const payload = await response.json();
+    catalogVoices = payload.voices;
+    elements.catalogTotalCount.textContent = catalogVoices.length;
+    elements.projectSummaryTitle.textContent = `${catalogVoices.length} 个在线音色`;
+    catalogLanguageControl.setOptions(catalogLanguageOptions(catalogVoices));
+    catalogLanguageControl.setValue("");
+    updateLanguageOptionCounts(payload.localeCounts, payload.totalVoiceCount);
+    elements.catalogLoading.hidden = true;
+    renderVoiceCatalog();
+  } catch (error) {
+    elements.catalogLoading.hidden = true;
+    elements.catalogError.hidden = false;
+    elements.catalogErrorMessage.textContent = error.message;
+    elements.catalogError.title = error.detail || "";
+  }
+}
+
+function showAppView(view) {
+  const showCatalog = view === "catalog";
+  elements.workspaceView.hidden = showCatalog;
+  elements.voiceCatalogView.hidden = !showCatalog;
+  document.body.classList.toggle("catalog-view", showCatalog);
+  document.querySelector("#sidebarWorkspaceButton").classList.toggle("is-active", !showCatalog);
+  document.querySelector("#sidebarVoiceCatalogButton").classList.toggle("is-active", showCatalog);
+  elements.projectSummaryLabel.textContent = showCatalog ? "音色目录" : "当前项目";
+  elements.projectSummaryTitle.textContent = showCatalog
+    ? catalogVoices.length ? `${catalogVoices.length} 个在线音色` : "全部在线音色"
+    : "默认语音项目";
+  closeSidebar();
+  window.scrollTo({ top: 0, behavior: document.body.classList.contains("reduce-motion") ? "auto" : "smooth" });
+}
+
+async function useCatalogVoice(voice) {
+  showAppView("workspace");
+  const matchingLocale = languageOptions.find((option) => (
+    option.value && voice.locale.toLocaleLowerCase("en-US").startsWith(option.value.toLocaleLowerCase("en-US"))
+  ));
+  const targetLocale = matchingLocale?.value || "";
+  if (localeControl.value !== targetLocale || !voicesByName.has(voice.shortName)) {
+    localeControl.setValue(targetLocale);
+    await loadVoices();
+  }
+  if (voicesByName.has(voice.shortName)) {
+    voiceControl.setValue(voice.shortName, true);
+    activateMobilePanel("settingsPanel");
+    document.querySelector("#voiceLibrary").scrollIntoView({ behavior: "smooth", block: "center" });
+  } else {
+    showError("无法选择该音色，请重新载入音色列表");
+  }
 }
 
 async function loadVoices() {
   const requestSequence = ++voiceRequestSequence;
-  voiceControl.setLoading("正在载入音色", "正在连接微软语音服务");
+  voiceControl.setLoading("正在载入音色", "正在连接在线语音服务");
+  elements.voicePresets.replaceChildren();
   elements.generateButton.disabled = true;
+  elements.bottomGenerateButton.disabled = true;
   showError();
   try {
     const locale = localeControl.value;
     const query = locale ? `?locale=${encodeURIComponent(locale)}` : "";
     const response = await fetch(`/api/voices${query}`);
+    if (requestSequence !== voiceRequestSequence) return;
+    if (!response.ok) {
+      const payload = await readErrorPayload(response);
+      throw responseError(response, payload, "获取音色失败");
+    }
     const payload = await response.json();
     if (requestSequence !== voiceRequestSequence) return;
-    if (!response.ok) throw new Error(payload.error || "获取音色失败");
+    updateLanguageOptionCounts(payload.localeCounts, payload.totalVoiceCount);
 
     voicesByName.clear();
     for (const voice of payload.voices) {
       voicesByName.set(voice.shortName, voice);
     }
+    renderVoicePresets(payload.voices);
     voiceControl.setOptions(payload.voices.map((voice) => ({
       value: voice.shortName,
       label: voice.displayName,
       description: `${voice.genderName} · ${voice.localeName}`,
       code: voice.shortName,
+      avatarIndex: avatarIndexForVoice(voice),
     })));
     const preferredVoice = voicesByName.has(defaultVoice) ? defaultVoice : payload.voices[0]?.shortName;
     if (preferredVoice) voiceControl.setValue(preferredVoice);
     voiceControl.setDisabled(payload.voices.length === 0);
     elements.generateButton.disabled = payload.voices.length === 0;
+    elements.bottomGenerateButton.disabled = payload.voices.length === 0;
     if (payload.voices.length === 0) showError("该语言暂时没有可用音色");
     updateVoiceSummary();
   } catch (error) {
@@ -307,7 +766,7 @@ async function loadVoices() {
     elements.voiceDisplayName.textContent = "音色载入失败";
     elements.voiceDescription.textContent = "请检查网络后重试";
     elements.voiceCode.textContent = "";
-    showError(error.message);
+    showError(error.message, error.detail);
   }
 }
 
@@ -326,17 +785,99 @@ function formatDate(dateText) {
   }).format(date);
 }
 
+function formatDownloadTimestamp(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
 function truncateText(text, length = 34) {
   return text.length > length ? `${text.slice(0, length)}…` : text;
 }
 
-function setCurrentAudio({ id = null, url, text, voiceName, voice, size, elapsed = null, autoplay = true }) {
+function formatTime(seconds) {
+  if (!Number.isFinite(seconds)) return "00:00";
+  const minutes = Math.floor(seconds / 60);
+  const remaining = Math.floor(seconds % 60);
+  return `${String(minutes).padStart(2, "0")}:${String(remaining).padStart(2, "0")}`;
+}
+
+function createWaveform() {
+  const fragment = document.createDocumentFragment();
+  for (let index = 0; index < 20; index += 1) {
+    const bar = document.createElement("span");
+    bar.style.height = "5px";
+    bar.style.setProperty("--bar-index", index);
+    fragment.append(bar);
+  }
+  elements.waveformBars.replaceChildren(fragment);
+}
+
+function ensureAudioAnalyser() {
+  if (audioAnalyser) return true;
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return false;
+  try {
+    audioContext = new AudioContextClass();
+    audioAnalyser = audioContext.createAnalyser();
+    audioAnalyser.fftSize = 256;
+    audioAnalyser.smoothingTimeConstant = 0.82;
+    audioAnalyser.minDecibels = -88;
+    audioAnalyser.maxDecibels = -18;
+    audioSource = audioContext.createMediaElementSource(elements.audioPlayer);
+    audioSource.connect(audioAnalyser);
+    audioAnalyser.connect(audioContext.destination);
+    frequencyData = new Uint8Array(audioAnalyser.frequencyBinCount);
+    return true;
+  } catch (_) {
+    audioAnalyser = null;
+    return false;
+  }
+}
+
+function resumeAudioAnalysis() {
+  if (!ensureAudioAnalyser()) return;
+  if (audioContext.state !== "running") audioContext.resume().catch(() => {});
+}
+
+function stopSpectrum() {
+  if (spectrumFrame !== null) cancelAnimationFrame(spectrumFrame);
+  spectrumFrame = null;
+}
+
+function drawSpectrum() {
+  if (!audioAnalyser || elements.audioPlayer.paused) {
+    stopSpectrum();
+    return;
+  }
+  audioAnalyser.getByteFrequencyData(frequencyData);
+  const bars = elements.waveformBars.children;
+  const usefulBins = Math.max(1, Math.floor(frequencyData.length * 0.78));
+  for (let index = 0; index < bars.length; index += 1) {
+    const progress = bars.length === 1 ? 0 : index / (bars.length - 1);
+    const bin = Math.min(usefulBins - 1, Math.floor((progress ** 1.55) * usefulBins));
+    const energy = frequencyData[bin] / 255;
+    bars[index].style.height = `${5 + energy * 49}px`;
+    bars[index].style.opacity = String(0.26 + energy * 0.74);
+  }
+  spectrumFrame = requestAnimationFrame(drawSpectrum);
+}
+
+function startSpectrum() {
+  stopSpectrum();
+  spectrumFrame = requestAnimationFrame(drawSpectrum);
+}
+
+function setCurrentAudio({ id = null, url, text, voiceName, voice, voiceGender = "", size, elapsed = null, autoplay = true }) {
   currentHistoryId = id;
+  stopSpectrum();
   elements.audioPlayer.src = url;
   elements.resultTitle.textContent = truncateText(text, 38);
   const details = [voiceName || voice, formatBytes(size)];
   if (elapsed !== null) details.push(`${elapsed.toFixed(1)} 秒生成`);
   elements.resultMeta.textContent = details.join(" · ");
+  applyVoiceAvatar(elements.resultAvatar, voice || voiceName, voiceGender);
+  elements.downloadButton.disabled = false;
+  elements.topDownloadButton.disabled = false;
   elements.emptyState.hidden = true;
   elements.generationState.hidden = true;
   elements.audioResult.hidden = false;
@@ -351,6 +892,7 @@ async function synthesize() {
     return;
   }
 
+  resumeAudioAnalysis();
   setBusy(true);
   showError();
   const startedAt = performance.now();
@@ -369,8 +911,8 @@ async function synthesize() {
       body: JSON.stringify(options),
     });
     if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.error || `生成失败（HTTP ${response.status}）`);
+      const payload = await readErrorPayload(response);
+      throw responseError(response, payload, `生成失败（HTTP ${response.status}）`);
     }
 
     const blob = await response.blob();
@@ -383,12 +925,13 @@ async function synthesize() {
       text,
       voiceName: voice?.displayName,
       voice: options.voice,
+      voiceGender: voice?.gender,
       size: blob.size,
       elapsed: (performance.now() - startedAt) / 1000,
     });
     await loadHistory();
   } catch (error) {
-    showError(error.message);
+    showError(error.message, error.detail);
   } finally {
     setBusy(false);
   }
@@ -419,27 +962,38 @@ function renderHistory(items) {
     row.className = "history-item";
     if (record.id === currentHistoryId) row.classList.add("is-current");
 
-    const playButton = iconButton("play", "试听", playHistory, record.id);
-    playButton.classList.add("history-play");
+    const textButton = document.createElement("button");
+    textButton.type = "button";
+    textButton.className = "history-text";
+    textButton.title = "再次使用这段文字";
+    textButton.textContent = truncateText(record.text, 42);
+    textButton.addEventListener("click", () => reuseHistory(record));
 
-    const copy = document.createElement("button");
-    copy.type = "button";
-    copy.className = "history-copy";
-    copy.title = "再次使用这段文字";
-    const title = document.createElement("strong");
-    title.textContent = truncateText(record.text);
-    const meta = document.createElement("span");
-    meta.textContent = `${record.voiceName || record.voice} · ${formatDate(record.createdAt)} · ${formatBytes(record.size)}`;
-    copy.append(title, meta);
-    copy.addEventListener("click", () => reuseHistory(record));
+    const voiceCell = document.createElement("span");
+    voiceCell.className = "history-voice";
+    const avatar = document.createElement("span");
+    avatar.className = "history-voice-avatar";
+    applyVoiceAvatar(avatar, record.voice || record.voiceName, record.voiceGender);
+    const voiceName = document.createElement("span");
+    voiceName.textContent = record.voiceName || record.voice;
+    voiceCell.append(avatar, voiceName);
+
+    const params = document.createElement("span");
+    params.className = "history-params";
+    params.textContent = `${record.rate} / ${record.pitch}`;
+
+    const date = document.createElement("span");
+    date.className = "history-date";
+    date.textContent = formatDate(record.createdAt);
 
     const actions = document.createElement("div");
     actions.className = "history-actions";
     actions.append(
+      iconButton("play", "试听", playHistory, record.id),
       iconButton("download", "下载", downloadHistory, record.id),
       iconButton("trash-2", "删除", deleteHistory, record.id),
     );
-    row.append(playButton, copy, actions);
+    row.append(textButton, voiceCell, params, date, actions);
     fragment.append(row);
   }
   elements.historyList.append(fragment);
@@ -449,18 +1003,22 @@ function renderHistory(items) {
 async function loadHistory() {
   try {
     const response = await fetch("/api/history");
+    if (!response.ok) {
+      const payload = await readErrorPayload(response);
+      throw responseError(response, payload, "转换记录载入失败");
+    }
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "转换记录载入失败");
     historyItems = payload.history;
     renderHistory(historyItems);
   } catch (error) {
-    showError(error.message);
+    showError(error.message, error.detail);
   }
 }
 
 async function playHistory(id) {
   const record = historyItems.find((item) => item.id === id);
   if (!record) return;
+  resumeAudioAnalysis();
   revokeGeneratedBlob();
   setCurrentAudio({
     id,
@@ -468,6 +1026,7 @@ async function playHistory(id) {
     text: record.text,
     voiceName: record.voiceName,
     voice: record.voice,
+    voiceGender: record.voiceGender,
     size: record.size,
   });
   renderHistory(historyItems);
@@ -512,9 +1071,10 @@ async function deleteHistory(id) {
   const accepted = await askForConfirmation("删除这条记录？", "对应的本地 MP3 文件也会被删除，此操作无法撤销。");
   if (!accepted) return;
   const response = await fetch(`/api/history/${id}`, { method: "DELETE" });
-  const payload = await response.json();
   if (!response.ok) {
-    showError(payload.error || "删除失败");
+    const payload = await readErrorPayload(response);
+    const error = responseError(response, payload, "删除失败");
+    showError(error.message, error.detail);
     return;
   }
   if (currentHistoryId === id) clearCurrentAudio();
@@ -525,9 +1085,10 @@ async function clearHistory() {
   const accepted = await askForConfirmation("清空全部转换记录？", "最近生成的本地 MP3 文件将全部删除，此操作无法撤销。");
   if (!accepted) return;
   const response = await fetch("/api/history", { method: "DELETE" });
-  const payload = await response.json();
   if (!response.ok) {
-    showError(payload.error || "清空失败");
+    const payload = await readErrorPayload(response);
+    const error = responseError(response, payload, "清空失败");
+    showError(error.message, error.detail);
     return;
   }
   clearCurrentAudio();
@@ -538,8 +1099,15 @@ function clearCurrentAudio() {
   elements.audioPlayer.pause();
   elements.audioPlayer.removeAttribute("src");
   elements.audioPlayer.load();
+  stopSpectrum();
   currentHistoryId = null;
   revokeGeneratedBlob();
+  elements.audioResult.classList.remove("is-playing");
+  elements.progressSlider.value = "0";
+  elements.currentTime.textContent = "00:00";
+  elements.durationTime.textContent = "00:00";
+  elements.downloadButton.disabled = true;
+  elements.topDownloadButton.disabled = true;
   elements.audioResult.hidden = true;
   elements.emptyState.hidden = false;
 }
@@ -552,8 +1120,132 @@ function downloadCurrentAudio() {
   if (!generatedBlobUrl) return;
   const link = document.createElement("a");
   link.href = generatedBlobUrl;
-  link.download = `edge-tts-${new Date().toISOString().replace(/[:.]/g, "-")}.mp3`;
+  link.download = `voice-studio-${selectedVoice()?.displayName || "audio"}-${formatDownloadTimestamp()}.mp3`;
   link.click();
+}
+
+function saveDraft() {
+  const draft = {
+    text: elements.textInput.value,
+    rate: document.querySelector("#rateInput").value,
+    pitch: document.querySelector("#pitchInput").value,
+    volume: document.querySelector("#volumeInput").value,
+  };
+  localStorage.setItem(draftStorageKey, JSON.stringify(draft));
+  elements.draftStatus.textContent = "草稿已保存";
+  setTimeout(() => { elements.draftStatus.textContent = ""; }, 1800);
+}
+
+function restoreDraft() {
+  try {
+    const draft = JSON.parse(localStorage.getItem(draftStorageKey));
+    if (!draft || typeof draft !== "object") return;
+    if (typeof draft.text === "string") elements.textInput.value = draft.text;
+    for (const key of ["rate", "pitch", "volume"]) {
+      const input = document.querySelector(`#${key}Input`);
+      if (input && Number.isFinite(Number(draft[key]))) input.value = draft[key];
+    }
+  } catch (_) {
+    localStorage.removeItem(draftStorageKey);
+  }
+}
+
+function activateMobilePanel(panelId) {
+  const inputActive = panelId === "inputPanel";
+  document.querySelector("#inputPanel").classList.toggle("is-mobile-active", inputActive);
+  document.querySelector("#settingsPanel").classList.toggle("is-mobile-active", !inputActive);
+  document.querySelector("#inputTab").classList.toggle("is-active", inputActive);
+  document.querySelector("#settingsTab").classList.toggle("is-active", !inputActive);
+  document.querySelector("#inputTab").setAttribute("aria-selected", String(inputActive));
+  document.querySelector("#settingsTab").setAttribute("aria-selected", String(!inputActive));
+}
+
+function closeSidebar() {
+  document.body.classList.remove("sidebar-open");
+  document.querySelector("#sidebarBackdrop").hidden = true;
+}
+
+function updateRangeOutputs() {
+  for (const [inputId, outputId, displaySuffix] of [
+    ["rateInput", "rateOutput", "%"],
+    ["pitchInput", "pitchOutput", " Hz"],
+    ["volumeInput", "volumeOutput", "%"],
+  ]) {
+    const value = Number(document.querySelector(`#${inputId}`).value);
+    document.querySelector(`#${outputId}`).textContent = `${value > 0 ? "+" : ""}${value}${displaySuffix}`;
+  }
+}
+
+function normalizeAccessibilitySettings(settings = {}) {
+  const zoom = Math.min(150, Math.max(100, Math.round(Number(settings.zoom) / 5) * 5 || 100));
+  return {
+    zoom,
+    highContrast: settings.highContrast === true,
+    reduceMotion: settings.reduceMotion === true,
+  };
+}
+
+function accessibilitySettingsFromControls() {
+  return normalizeAccessibilitySettings({
+    zoom: elements.interfaceZoomInput.value,
+    highContrast: elements.highContrastInput.checked,
+    reduceMotion: elements.reduceMotionInput.checked,
+  });
+}
+
+function applyAccessibilitySettings(settings) {
+  const normalized = normalizeAccessibilitySettings(settings);
+  document.documentElement.style.zoom = normalized.zoom === 100 ? "" : `${normalized.zoom}%`;
+  document.body.classList.toggle("high-contrast", normalized.highContrast);
+  document.body.classList.toggle("reduce-motion", normalized.reduceMotion);
+  elements.interfaceZoomInput.value = String(normalized.zoom);
+  elements.interfaceZoomInput.setAttribute("aria-valuetext", `${normalized.zoom}%`);
+  elements.interfaceZoomOutput.textContent = `${normalized.zoom}%`;
+  elements.zoomOutButton.disabled = normalized.zoom <= 100;
+  elements.zoomInButton.disabled = normalized.zoom >= 150;
+  elements.highContrastInput.checked = normalized.highContrast;
+  elements.reduceMotionInput.checked = normalized.reduceMotion;
+  return normalized;
+}
+
+function persistAccessibilitySettings(settings, message = "已保存到本机") {
+  const normalized = applyAccessibilitySettings(settings);
+  try {
+    localStorage.setItem(accessibilityStorageKey, JSON.stringify(normalized));
+    elements.advancedSaveStatus.textContent = message;
+    clearTimeout(advancedSaveTimer);
+    advancedSaveTimer = setTimeout(() => {
+      elements.advancedSaveStatus.textContent = "设置自动保存在本机";
+    }, 1800);
+  } catch (_) {
+    elements.advancedSaveStatus.textContent = "浏览器无法保存设置";
+  }
+}
+
+function restoreAccessibilitySettings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(accessibilityStorageKey));
+    applyAccessibilitySettings(saved || accessibilityDefaults);
+  } catch (_) {
+    localStorage.removeItem(accessibilityStorageKey);
+    applyAccessibilitySettings(accessibilityDefaults);
+  }
+}
+
+function adjustInterfaceZoom(amount) {
+  elements.interfaceZoomInput.value = String(Number(elements.interfaceZoomInput.value) + amount);
+  persistAccessibilitySettings(accessibilitySettingsFromControls());
+}
+
+function openAdvancedDialog() {
+  elements.advancedDialog.showModal();
+  closeSidebar();
+  elements.interfaceZoomInput.focus();
+}
+
+function openApiDialog() {
+  elements.apiDialog.showModal();
+  closeSidebar();
 }
 
 for (const [inputId, outputId, suffix, displaySuffix] of [
@@ -573,14 +1265,52 @@ for (const [inputId, outputId, suffix, displaySuffix] of [
 elements.textInput.addEventListener("input", updateCharacterCount);
 elements.generateButton.addEventListener("click", synthesize);
 elements.downloadButton.addEventListener("click", downloadCurrentAudio);
+elements.topDownloadButton.addEventListener("click", downloadCurrentAudio);
+elements.bottomGenerateButton.addEventListener("click", () => {
+  activateMobilePanel("settingsPanel");
+  synthesize();
+});
 elements.clearHistoryButton.addEventListener("click", clearHistory);
+elements.errorDetailButton.addEventListener("click", () => {
+  const isOpen = elements.errorDetailControl.classList.toggle("is-open");
+  elements.errorDetailButton.setAttribute("aria-expanded", String(isOpen));
+});
+document.querySelector("#saveDraftButton").addEventListener("click", saveDraft);
 document.querySelector("#clearTextButton").addEventListener("click", () => {
   elements.textInput.value = "";
   updateCharacterCount();
   elements.textInput.focus();
 });
-document.querySelector("#apiButton").addEventListener("click", () => elements.apiDialog.showModal());
+document.querySelector("#sidebarApiButton").addEventListener("click", openApiDialog);
+document.querySelector("#sidebarAdvancedButton").addEventListener("click", openAdvancedDialog);
+document.querySelector("#sidebarVoiceCatalogButton").addEventListener("click", () => {
+  showAppView("catalog");
+  loadVoiceCatalog();
+});
+document.querySelector("#bottomApiButton").addEventListener("click", openApiDialog);
+document.querySelector("#catalogRetryButton").addEventListener("click", loadVoiceCatalog);
+elements.catalogSearchInput.addEventListener("input", scheduleVoiceCatalogRender);
+for (const button of document.querySelectorAll("[data-catalog-gender]")) {
+  button.addEventListener("click", () => {
+    catalogGender = button.dataset.catalogGender;
+    for (const option of document.querySelectorAll("[data-catalog-gender]")) {
+      option.classList.toggle("is-selected", option === button);
+    }
+    renderVoiceCatalog();
+  });
+}
 document.querySelector("#closeApiButton").addEventListener("click", () => elements.apiDialog.close());
+document.querySelector("#closeAdvancedButton").addEventListener("click", () => elements.advancedDialog.close());
+document.querySelector("#doneAdvancedButton").addEventListener("click", () => elements.advancedDialog.close());
+elements.interfaceZoomInput.addEventListener("input", () => persistAccessibilitySettings(accessibilitySettingsFromControls()));
+elements.zoomOutButton.addEventListener("click", () => adjustInterfaceZoom(-5));
+elements.zoomInButton.addEventListener("click", () => adjustInterfaceZoom(5));
+elements.highContrastInput.addEventListener("change", () => persistAccessibilitySettings(accessibilitySettingsFromControls()));
+elements.reduceMotionInput.addEventListener("change", () => persistAccessibilitySettings(accessibilitySettingsFromControls()));
+document.querySelector("#resetAdvancedButton").addEventListener("click", () => {
+  localStorage.removeItem(accessibilityStorageKey);
+  persistAccessibilitySettings(accessibilityDefaults, "已恢复默认设置");
+});
 document.querySelector("#cancelConfirmButton").addEventListener("click", () => closeConfirmation(false));
 document.querySelector("#acceptConfirmButton").addEventListener("click", () => closeConfirmation(true));
 document.querySelector("#copyApiButton").addEventListener("click", async (event) => {
@@ -591,22 +1321,89 @@ document.querySelector("#copyApiButton").addEventListener("click", async (event)
 elements.apiDialog.addEventListener("click", (event) => {
   if (event.target === elements.apiDialog) elements.apiDialog.close();
 });
+elements.advancedDialog.addEventListener("click", (event) => {
+  if (event.target === elements.advancedDialog) elements.advancedDialog.close();
+});
 elements.confirmDialog.addEventListener("cancel", (event) => {
   event.preventDefault();
   closeConfirmation(false);
 });
 
+elements.playerToggle.addEventListener("click", () => {
+  if (!elements.audioPlayer.src) return;
+  if (elements.audioPlayer.paused) {
+    resumeAudioAnalysis();
+    elements.audioPlayer.play().catch(() => {});
+  }
+  else elements.audioPlayer.pause();
+});
+elements.audioPlayer.addEventListener("loadedmetadata", () => {
+  elements.durationTime.textContent = formatTime(elements.audioPlayer.duration);
+});
+elements.audioPlayer.addEventListener("timeupdate", () => {
+  elements.currentTime.textContent = formatTime(elements.audioPlayer.currentTime);
+  const duration = elements.audioPlayer.duration || 0;
+  elements.progressSlider.value = duration ? String(Math.round((elements.audioPlayer.currentTime / duration) * 1000)) : "0";
+});
+elements.audioPlayer.addEventListener("play", () => {
+  resumeAudioAnalysis();
+  startSpectrum();
+  elements.audioResult.classList.add("is-playing");
+  elements.playerToggle.setAttribute("aria-label", "暂停");
+});
+elements.audioPlayer.addEventListener("pause", () => {
+  stopSpectrum();
+  elements.audioResult.classList.remove("is-playing");
+  elements.playerToggle.setAttribute("aria-label", "播放");
+});
+elements.progressSlider.addEventListener("input", () => {
+  if (!Number.isFinite(elements.audioPlayer.duration)) return;
+  elements.audioPlayer.currentTime = (Number(elements.progressSlider.value) / 1000) * elements.audioPlayer.duration;
+});
+elements.playerVolume.addEventListener("input", () => {
+  elements.audioPlayer.volume = Number(elements.playerVolume.value);
+});
+
+document.querySelector("#inputTab").addEventListener("click", () => activateMobilePanel("inputPanel"));
+document.querySelector("#settingsTab").addEventListener("click", () => activateMobilePanel("settingsPanel"));
+document.querySelector("#menuButton").addEventListener("click", () => {
+  document.body.classList.add("sidebar-open");
+  document.querySelector("#sidebarBackdrop").hidden = false;
+});
+document.querySelector("#sidebarBackdrop").addEventListener("click", closeSidebar);
+for (const navigationButton of document.querySelectorAll("[data-scroll-target]")) {
+  navigationButton.addEventListener("click", () => {
+    const targetId = navigationButton.dataset.scrollTarget;
+    if (targetId === "workspaceTop") showAppView("workspace");
+    if (targetId === "voiceLibrary") activateMobilePanel("settingsPanel");
+    document.querySelector(`#${targetId}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    closeSidebar();
+  });
+}
+window.addEventListener("resize", () => {
+  if (window.innerWidth > 1120) closeSidebar();
+});
+
 window.addEventListener("beforeunload", revokeGeneratedBlob);
 document.addEventListener("pointerdown", (event) => {
   if (activeSelectControl && !activeSelectControl.root.contains(event.target)) activeSelectControl.close();
+  if (!elements.errorDetailControl.contains(event.target)) {
+    elements.errorDetailControl.classList.remove("is-open");
+    elements.errorDetailButton.setAttribute("aria-expanded", "false");
+  }
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && activeSelectControl) activeSelectControl.close();
 });
 localeControl = createUiSelect(elements.localeSelect, loadVoices);
 voiceControl = createUiSelect(elements.voiceSelect, updateVoiceSummary);
+catalogLanguageControl = createUiSelect(elements.catalogLanguageSelect, renderVoiceCatalog);
 localeControl.setOptions(languageOptions);
 localeControl.setValue("zh-CN");
+restoreAccessibilitySettings();
+restoreDraft();
+updateRangeOutputs();
 updateCharacterCount();
+createWaveform();
 refreshIcons();
-Promise.all([loadVoices(), loadHistory()]);
+loadVoices().then(loadHistory);

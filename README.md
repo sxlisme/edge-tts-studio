@@ -1,6 +1,6 @@
-# Edge TTS Studio
+# 语音工作台
 
-基于 `edge-tts` 的本地文字转语音工具，包含中文浏览器操作界面和 HTTP API。支持中文音色名称、在线试听、MP3 下载和最近 50 条本地转换记录。
+本地文字转语音工具，包含中文浏览器操作界面和 HTTP API。支持中文音色名称、在线试听、MP3 下载和最近 50 条本地转换记录。
 
 ## 启动
 
@@ -20,7 +20,7 @@
 curl -X POST http://127.0.0.1:8765/api/synthesize \
   -H 'Content-Type: application/json' \
   -d '{
-    "text": "你好，欢迎使用 Edge TTS。",
+    "text": "你好，欢迎使用语音工作台。",
     "voice": "zh-CN-XiaoxiaoNeural",
     "rate": "+0%",
     "volume": "+0%",
@@ -51,10 +51,10 @@ curl http://127.0.0.1:8765/api/health
 
 ## 配置
 
-- `EDGE_TTS_HOST`：监听地址，默认 `127.0.0.1`
-- `EDGE_TTS_PORT`：监听端口，默认 `8765`
+- `VOICE_STUDIO_HOST`：监听地址，默认 `127.0.0.1`
+- `VOICE_STUDIO_PORT`：监听端口，默认 `8765`
 
-该工具依赖微软 Edge 在线语音服务，生成语音时需要联网。`edge-tts` 是第三方开源客户端，不是微软官方商业 API。
+该工具依赖在线语音服务，生成语音时需要联网。
 
 ## 多端规划
 
