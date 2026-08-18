@@ -1,26 +1,53 @@
-# 语音工作台
+# 声工坊
 
-本地文字转语音工具，包含中文浏览器操作界面和 HTTP API。支持中文音色名称、在线试听、MP3 下载和最近 50 条本地转换记录。
+使用 Tauri 2 和 Rust 开发的轻量文字转语音应用，支持 macOS、Windows、iOS 和 Android。应用直接连接在线语音服务，不需要 Python 环境，也不需要单独部署后端。
 
-## 启动
+![声工坊界面](docs/screenshot.png)
 
-在 macOS 中双击 `run.command`，或在终端执行：
+## 功能
+
+- 300+ 多语言音色，默认普通话晓晓音色
+- 中文音色名称、语言数量、性别和适用场景展示
+- 语速、音量、音调调节，以及输入语言与音色提示
+- 真实音频频谱、试听、MP3 导出和最近 50 条本地记录
+- 界面缩放、高对比度、减少动态效果等无障碍设置
+- 桌面端提供仅监听本机的 HTTP API
+
+音频生成需要联网。转换记录和 MP3 只保存在系统应用数据目录，删除记录时会同时删除对应音频。
+
+## 本地开发
+
+需要 Node.js 20+、Rust stable 和对应平台的 Tauri 2 系统依赖。
 
 ```bash
-./run.command
+npm ci
+npm run tauri -- dev
 ```
 
-服务默认只监听本机：<http://127.0.0.1:8765>
+构建当前桌面平台安装包：
 
-## API
+```bash
+npm run tauri -- build
+```
 
-生成 MP3：
+运行检查：
+
+```bash
+npm run build
+cd src-tauri
+cargo test --all-targets
+cargo clippy --all-targets -- -D warnings
+```
+
+## 桌面 HTTP API
+
+启动桌面应用后，本机 API 地址为 `http://127.0.0.1:8765`。移动端通过 Tauri IPC 使用同一套 Rust 核心，不开放监听端口。
 
 ```bash
 curl -X POST http://127.0.0.1:8765/api/synthesize \
   -H 'Content-Type: application/json' \
   -d '{
-    "text": "你好，欢迎使用语音工作台。",
+    "text": "你好，欢迎使用声工坊。",
     "voice": "zh-CN-XiaoxiaoNeural",
     "rate": "+0%",
     "volume": "+0%",
@@ -29,33 +56,21 @@ curl -X POST http://127.0.0.1:8765/api/synthesize \
   --output speech.mp3
 ```
 
-查询音色：
+其他接口：
 
-```bash
-curl 'http://127.0.0.1:8765/api/voices?locale=zh-CN'
-```
+- `GET /api/health`
+- `GET /api/voices?locale=zh-CN`
+- `GET /api/history`
+- `GET /api/history/{id}/audio`
+- `DELETE /api/history/{id}`
+- `DELETE /api/history`
 
-查询转换记录：
+## 自动构建
 
-```bash
-curl http://127.0.0.1:8765/api/history
-```
+GitHub Actions 的 `Desktop packages` 工作流生成 macOS DMG、Windows MSI 和 NSIS EXE；`Mobile packages` 工作流生成 Android APK/AAB 和未签名的 iOS 模拟器应用。推送 `v*` 标签时，桌面安装包还会自动附加到 GitHub Release。
 
-转换记录和 MP3 保存在项目的 `data` 目录，只在本机使用。界面中删除记录时，对应 MP3 也会删除。
+iPhone 真机 IPA 和正式 Android 商店包仍需在仓库中配置对应开发者证书与签名密钥。
 
-健康检查：
+## 开发者
 
-```bash
-curl http://127.0.0.1:8765/api/health
-```
-
-## 配置
-
-- `VOICE_STUDIO_HOST`：监听地址，默认 `127.0.0.1`
-- `VOICE_STUDIO_PORT`：监听端口，默认 `8765`
-
-该工具依赖在线语音服务，生成语音时需要联网。
-
-## 多端规划
-
-当前界面已经适配桌面和手机浏览器，UI 与 HTTP API 相互独立。后续可以在同一代码基础上增加 PWA 安装能力，并使用 Tauri 封装 Windows 和 macOS 客户端；正式开放给手机或公网使用前，需要增加账号、HTTPS、访问限流和服务端存储策略。
+sxlisme · blackberrysxl@163.com

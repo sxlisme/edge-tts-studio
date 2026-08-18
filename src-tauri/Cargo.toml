@@ -1,0 +1,40 @@
+[package]
+name = "voice-studio"
+version = "1.2.0"
+description = "A compact cross-platform text-to-speech studio"
+authors = ["sxlisme <blackberrysxl@163.com>"]
+edition = "2021"
+
+[lib]
+name = "voice_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+msedge-tts = { version = "=0.4.0", default-features = false, features = ["tokio-runtime"] }
+quick-xml = "0.38"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sysinfo = "0.37"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "net", "rt", "sync", "time"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
+axum = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

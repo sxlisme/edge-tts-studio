@@ -1,0 +1,72 @@
+name: Mobile packages
+
+on:
+  workflow_dispatch:
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install Android SDK components
+        shell: bash
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.0.12077973"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+      - run: npm ci
+      - run: npm run tauri -- android init --ci
+      - run: npm run tauri -- android build --apk --aab --ci
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 声工坊-Android
+          path: |
+            src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+            src-tauri/gen/android/app/build/outputs/bundle/**/*.aab
+          if-no-files-found: error
+
+  ios-simulator:
+    runs-on: macos-14
+    env:
+      APPLE_SIGNING_IDENTITY: "-"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim,x86_64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - run: npm run tauri -- ios init --ci
+      - run: npm run tauri -- ios build --target aarch64-sim x86_64 --debug --no-sign --ci
+      - name: Archive simulator application
+        shell: bash
+        run: |
+          app_path="$(find src-tauri/gen/apple -type d -name '*.app' -print -quit)"
+          test -n "$app_path"
+          ditto -c -k --sequesterRsrc --keepParent "$app_path" ios-simulator-app.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 声工坊-iOS-simulator
+          path: ios-simulator-app.zip
+          if-no-files-found: error

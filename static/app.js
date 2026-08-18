@@ -1,3 +1,8 @@
+import "./vendor/lucide.min.js";
+import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { save } from "@tauri-apps/plugin-dialog";
+
 const elements = {
   textInput: document.querySelector("#textInput"),
   characterCount: document.querySelector("#characterCount"),
@@ -60,6 +65,8 @@ const elements = {
   catalogErrorMessage: document.querySelector("#catalogErrorMessage"),
   catalogEmpty: document.querySelector("#catalogEmpty"),
   catalogList: document.querySelector("#catalogList"),
+  systemVersion: document.querySelector("#systemVersion"),
+  applicationVersion: document.querySelector("#applicationVersion"),
 };
 
 const defaultVoice = document.body.dataset.defaultVoice;
@@ -202,23 +209,20 @@ function showError(message = "", detail = "") {
   }
 }
 
-function responseError(response, payload, fallbackMessage) {
-  const detail = payload?.error || `HTTP ${response.status} ${response.statusText}`.trim();
-  const message = response.status >= 500
-    ? "请求异常，请检查输入内容和音色是否正确"
-    : detail || fallbackMessage;
-  const error = new Error(message);
-  error.detail = detail;
-  return error;
+function normalizedNativeError(error, fallbackMessage = "操作失败") {
+  const detail = error instanceof Error ? error.message : String(error || fallbackMessage);
+  const isOnlineFailure = /在线语音服务|WebSocket|connection|connect|timed out|timeout/i.test(detail);
+  return {
+    message: isOnlineFailure ? "请求异常，请检查输入内容和音色是否正确" : detail || fallbackMessage,
+    detail,
+  };
 }
 
-async function readErrorPayload(response) {
-  const body = await response.text();
-  try {
-    return JSON.parse(body);
-  } catch (_) {
-    return { error: body.trim().slice(0, 1200) || `HTTP ${response.status}` };
-  }
+function blobFromBase64(value, type = "audio/mpeg") {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return new Blob([bytes], { type });
 }
 
 function updateCharacterCount() {
@@ -665,12 +669,7 @@ async function loadVoiceCatalog() {
   elements.catalogEmpty.hidden = true;
   elements.catalogList.replaceChildren();
   try {
-    const response = await fetch("/api/voices");
-    if (!response.ok) {
-      const payload = await readErrorPayload(response);
-      throw responseError(response, payload, "全部音色载入失败");
-    }
-    const payload = await response.json();
+    const payload = await invoke("list_voices", { locale: null });
     catalogVoices = payload.voices;
     elements.catalogTotalCount.textContent = catalogVoices.length;
     elements.projectSummaryTitle.textContent = `${catalogVoices.length} 个在线音色`;
@@ -680,10 +679,11 @@ async function loadVoiceCatalog() {
     elements.catalogLoading.hidden = true;
     renderVoiceCatalog();
   } catch (error) {
+    const normalized = normalizedNativeError(error, "全部音色载入失败");
     elements.catalogLoading.hidden = true;
     elements.catalogError.hidden = false;
-    elements.catalogErrorMessage.textContent = error.message;
-    elements.catalogError.title = error.detail || "";
+    elements.catalogErrorMessage.textContent = normalized.message;
+    elements.catalogError.title = normalized.detail;
   }
 }
 
@@ -730,14 +730,7 @@ async function loadVoices() {
   showError();
   try {
     const locale = localeControl.value;
-    const query = locale ? `?locale=${encodeURIComponent(locale)}` : "";
-    const response = await fetch(`/api/voices${query}`);
-    if (requestSequence !== voiceRequestSequence) return;
-    if (!response.ok) {
-      const payload = await readErrorPayload(response);
-      throw responseError(response, payload, "获取音色失败");
-    }
-    const payload = await response.json();
+    const payload = await invoke("list_voices", { locale: locale || null });
     if (requestSequence !== voiceRequestSequence) return;
     updateLanguageOptionCounts(payload.localeCounts, payload.totalVoiceCount);
 
@@ -762,11 +755,12 @@ async function loadVoices() {
     updateVoiceSummary();
   } catch (error) {
     if (requestSequence !== voiceRequestSequence) return;
+    const normalized = normalizedNativeError(error, "获取音色失败");
     voiceControl.setError("音色载入失败", "请检查网络后重试");
     elements.voiceDisplayName.textContent = "音色载入失败";
     elements.voiceDescription.textContent = "请检查网络后重试";
     elements.voiceCode.textContent = "";
-    showError(error.message, error.detail);
+    showError(normalized.message, normalized.detail);
   }
 }
 
@@ -905,22 +899,13 @@ async function synthesize() {
   };
 
   try {
-    const response = await fetch("/api/synthesize", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(options),
-    });
-    if (!response.ok) {
-      const payload = await readErrorPayload(response);
-      throw responseError(response, payload, `生成失败（HTTP ${response.status}）`);
-    }
-
-    const blob = await response.blob();
+    const result = await invoke("synthesize", { options });
+    const blob = blobFromBase64(result.audioBase64);
     revokeGeneratedBlob();
     generatedBlobUrl = URL.createObjectURL(blob);
     const voice = selectedVoice();
     setCurrentAudio({
-      id: response.headers.get("X-History-Id"),
+      id: result.record.id,
       url: generatedBlobUrl,
       text,
       voiceName: voice?.displayName,
@@ -931,7 +916,8 @@ async function synthesize() {
     });
     await loadHistory();
   } catch (error) {
-    showError(error.message, error.detail);
+    const normalized = normalizedNativeError(error, "语音生成失败");
+    showError(normalized.message, normalized.detail);
   } finally {
     setBusy(false);
   }
@@ -1002,40 +988,55 @@ function renderHistory(items) {
 
 async function loadHistory() {
   try {
-    const response = await fetch("/api/history");
-    if (!response.ok) {
-      const payload = await readErrorPayload(response);
-      throw responseError(response, payload, "转换记录载入失败");
-    }
-    const payload = await response.json();
+    const payload = await invoke("list_history");
     historyItems = payload.history;
     renderHistory(historyItems);
   } catch (error) {
-    showError(error.message, error.detail);
+    const normalized = normalizedNativeError(error, "转换记录载入失败");
+    showError(normalized.message, normalized.detail);
   }
 }
 
 async function playHistory(id) {
   const record = historyItems.find((item) => item.id === id);
   if (!record) return;
-  resumeAudioAnalysis();
-  revokeGeneratedBlob();
-  setCurrentAudio({
-    id,
-    url: `/api/history/${id}/audio`,
-    text: record.text,
-    voiceName: record.voiceName,
-    voice: record.voice,
-    voiceGender: record.voiceGender,
-    size: record.size,
-  });
-  renderHistory(historyItems);
+  try {
+    resumeAudioAnalysis();
+    const payload = await invoke("read_history_audio", { id });
+    revokeGeneratedBlob();
+    generatedBlobUrl = URL.createObjectURL(blobFromBase64(payload.audioBase64));
+    setCurrentAudio({
+      id,
+      url: generatedBlobUrl,
+      text: record.text,
+      voiceName: record.voiceName,
+      voice: record.voice,
+      voiceGender: record.voiceGender,
+      size: record.size,
+    });
+    renderHistory(historyItems);
+  } catch (error) {
+    const normalized = normalizedNativeError(error, "音频读取失败");
+    showError(normalized.message, normalized.detail);
+  }
 }
 
-function downloadHistory(id) {
-  const link = document.createElement("a");
-  link.href = `/api/history/${id}/audio?download=1`;
-  link.click();
+async function downloadHistory(id) {
+  const record = historyItems.find((item) => item.id === id);
+  if (!record) return;
+  const voiceName = (record.voiceName || "audio").replace(/[\\/:*?"<>|]/g, "-");
+  const timestamp = formatDownloadTimestamp(new Date(record.createdAt));
+  try {
+    const destination = await save({
+      defaultPath: `voice-studio-${voiceName}-${timestamp}.mp3`,
+      filters: [{ name: "MP3 音频", extensions: ["mp3"] }],
+    });
+    if (!destination) return;
+    await invoke("export_history_audio", { id, destination });
+  } catch (error) {
+    const normalized = normalizedNativeError(error, "导出音频失败");
+    showError(normalized.message, normalized.detail);
+  }
 }
 
 async function reuseHistory(record) {
@@ -1070,11 +1071,11 @@ function closeConfirmation(accepted) {
 async function deleteHistory(id) {
   const accepted = await askForConfirmation("删除这条记录？", "对应的本地 MP3 文件也会被删除，此操作无法撤销。");
   if (!accepted) return;
-  const response = await fetch(`/api/history/${id}`, { method: "DELETE" });
-  if (!response.ok) {
-    const payload = await readErrorPayload(response);
-    const error = responseError(response, payload, "删除失败");
-    showError(error.message, error.detail);
+  try {
+    await invoke("delete_history", { id });
+  } catch (error) {
+    const normalized = normalizedNativeError(error, "删除失败");
+    showError(normalized.message, normalized.detail);
     return;
   }
   if (currentHistoryId === id) clearCurrentAudio();
@@ -1084,11 +1085,11 @@ async function deleteHistory(id) {
 async function clearHistory() {
   const accepted = await askForConfirmation("清空全部转换记录？", "最近生成的本地 MP3 文件将全部删除，此操作无法撤销。");
   if (!accepted) return;
-  const response = await fetch("/api/history", { method: "DELETE" });
-  if (!response.ok) {
-    const payload = await readErrorPayload(response);
-    const error = responseError(response, payload, "清空失败");
-    showError(error.message, error.detail);
+  try {
+    await invoke("clear_history");
+  } catch (error) {
+    const normalized = normalizedNativeError(error, "清空失败");
+    showError(normalized.message, normalized.detail);
     return;
   }
   clearCurrentAudio();
@@ -1117,11 +1118,17 @@ function downloadCurrentAudio() {
     downloadHistory(currentHistoryId);
     return;
   }
-  if (!generatedBlobUrl) return;
-  const link = document.createElement("a");
-  link.href = generatedBlobUrl;
-  link.download = `voice-studio-${selectedVoice()?.displayName || "audio"}-${formatDownloadTimestamp()}.mp3`;
-  link.click();
+}
+
+async function loadAppInformation() {
+  try {
+    const information = await invoke("app_information");
+    elements.systemVersion.textContent = information.systemVersion;
+    elements.applicationVersion.textContent = information.appVersion;
+  } catch (_) {
+    elements.systemVersion.textContent = navigator.platform || "当前设备";
+    elements.applicationVersion.textContent = "v1.2.0";
+  }
 }
 
 function saveDraft() {
@@ -1195,7 +1202,10 @@ function accessibilitySettingsFromControls() {
 
 function applyAccessibilitySettings(settings) {
   const normalized = normalizeAccessibilitySettings(settings);
-  document.documentElement.style.zoom = normalized.zoom === 100 ? "" : `${normalized.zoom}%`;
+  document.documentElement.style.zoom = "";
+  getCurrentWebview().setZoom(normalized.zoom / 100).catch(() => {
+    document.documentElement.style.zoom = normalized.zoom === 100 ? "" : `${normalized.zoom}%`;
+  });
   document.body.classList.toggle("high-contrast", normalized.highContrast);
   document.body.classList.toggle("reduce-motion", normalized.reduceMotion);
   elements.interfaceZoomInput.value = String(normalized.zoom);
@@ -1406,4 +1416,5 @@ updateRangeOutputs();
 updateCharacterCount();
 createWaveform();
 refreshIcons();
+loadAppInformation();
 loadVoices().then(loadHistory);
