@@ -1,7 +1,10 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { initializeAudioInspection } from "./audio-inspection.js";
 import {
+  ArrowDown,
+  ArrowUp,
   AudioWaveform,
   Braces,
   Check,
@@ -11,6 +14,8 @@ import {
   Copy,
   Download,
   Eraser,
+  FileAudio,
+  FilePlus2,
   Files,
   FolderOpen,
   FolderOutput,
@@ -21,16 +26,22 @@ import {
   Languages,
   LayoutDashboard,
   LibraryBig,
+  ListMusic,
   LoaderCircle,
   Menu,
   Minus,
   MonitorCog,
+  Music2,
   Pause,
   Play,
   Plus,
   RotateCcw,
   Save,
+  Scan,
+  ScanLine,
   ScanText,
+  Scissors,
+  ScrollText,
   Search,
   SearchX,
   Settings2,
@@ -40,11 +51,16 @@ import {
   Trash2,
   TriangleAlert,
   Volume2,
+  Waves,
   X,
+  ZoomIn,
+  ZoomOut,
   createIcons,
 } from "lucide";
 
 const iconSet = {
+  ArrowDown,
+  ArrowUp,
   AudioWaveform,
   Braces,
   Check,
@@ -54,6 +70,8 @@ const iconSet = {
   Copy,
   Download,
   Eraser,
+  FileAudio,
+  FilePlus2,
   Files,
   FolderOpen,
   FolderOutput,
@@ -64,16 +82,22 @@ const iconSet = {
   Languages,
   LayoutDashboard,
   LibraryBig,
+  ListMusic,
   LoaderCircle,
   Menu,
   Minus,
   MonitorCog,
+  Music2,
   Pause,
   Play,
   Plus,
   RotateCcw,
   Save,
+  Scan,
+  ScanLine,
   ScanText,
+  Scissors,
+  ScrollText,
   Search,
   SearchX,
   Settings2,
@@ -83,7 +107,10 @@ const iconSet = {
   Trash2,
   TriangleAlert,
   Volume2,
+  Waves,
   X,
+  ZoomIn,
+  ZoomOut,
 };
 
 const elements = {
@@ -126,6 +153,22 @@ const elements = {
   historyCount: document.querySelector("#historyCount"),
   clearHistoryButton: document.querySelector("#clearHistoryButton"),
   importFilesButton: document.querySelector("#importFilesButton"),
+  longTextButton: document.querySelector("#longTextButton"),
+  longTextPanel: document.querySelector("#longTextPanel"),
+  longTextFileName: document.querySelector("#longTextFileName"),
+  longTextMeta: document.querySelector("#longTextMeta"),
+  longTextStatus: document.querySelector("#longTextStatus"),
+  longTextProgressText: document.querySelector("#longTextProgressText"),
+  longTextPercent: document.querySelector("#longTextPercent"),
+  longTextProgressBar: document.querySelector("#longTextProgressBar"),
+  longTextLogCharacters: document.querySelector("#longTextLogCharacters"),
+  longTextLogSegments: document.querySelector("#longTextLogSegments"),
+  longTextLogSuccess: document.querySelector("#longTextLogSuccess"),
+  longTextLogFailed: document.querySelector("#longTextLogFailed"),
+  longTextLogCompletedAt: document.querySelector("#longTextLogCompletedAt"),
+  longTextLogList: document.querySelector("#longTextLogList"),
+  stopLongTextButton: document.querySelector("#stopLongTextButton"),
+  downloadLongTextButton: document.querySelector("#downloadLongTextButton"),
   batchPanel: document.querySelector("#batchPanel"),
   batchCount: document.querySelector("#batchCount"),
   batchList: document.querySelector("#batchList"),
@@ -147,6 +190,7 @@ const elements = {
   advancedSaveStatus: document.querySelector("#advancedSaveStatus"),
   workspaceView: document.querySelector("#workspaceTop"),
   voiceCatalogView: document.querySelector("#voiceCatalogView"),
+  audioInspectionView: document.querySelector("#audioInspectionView"),
   projectSummaryLabel: document.querySelector("#projectSummaryLabel"),
   projectSummaryTitle: document.querySelector("#projectSummaryTitle"),
   catalogSearchInput: document.querySelector("#catalogSearchInput"),
@@ -257,6 +301,8 @@ let batchRunning = false;
 let batchRunId = "";
 let batchCancellationRequested = false;
 let singleGenerationBusy = false;
+let longGenerationRunning = false;
+let longTask = null;
 let exportDirectory = "";
 let isDesktopApp = false;
 let batchItemSequence = 0;
@@ -523,8 +569,9 @@ function createUiSelect(root, onChange) {
 
 function setBusy(busy) {
   singleGenerationBusy = busy;
-  elements.generateButton.disabled = busy || batchRunning || !voiceControl.value;
-  elements.bottomGenerateButton.disabled = busy || batchRunning || !voiceControl.value;
+  elements.generateButton.disabled = busy || batchRunning || longGenerationRunning || !voiceControl.value;
+  elements.bottomGenerateButton.disabled = busy || batchRunning || longGenerationRunning || !voiceControl.value;
+  elements.longTextButton.disabled = busy || batchRunning || longGenerationRunning || !voiceControl.value;
   elements.generateButton.classList.toggle("is-loading", busy);
   elements.generateButton.querySelector("span").textContent = busy ? "正在生成" : "生成并试听";
 
@@ -802,15 +849,19 @@ async function loadVoiceCatalog() {
 
 function showAppView(view) {
   const showCatalog = view === "catalog";
-  elements.workspaceView.hidden = showCatalog;
+  const showInspection = view === "inspection";
+  elements.workspaceView.hidden = showCatalog || showInspection;
   elements.voiceCatalogView.hidden = !showCatalog;
+  elements.audioInspectionView.hidden = !showInspection;
   document.body.classList.toggle("catalog-view", showCatalog);
-  document.querySelector("#sidebarWorkspaceButton").classList.toggle("is-active", !showCatalog);
+  document.body.classList.toggle("inspection-view", showInspection);
+  document.querySelector("#sidebarWorkspaceButton").classList.toggle("is-active", !showCatalog && !showInspection);
   document.querySelector("#sidebarVoiceCatalogButton").classList.toggle("is-active", showCatalog);
-  elements.projectSummaryLabel.textContent = showCatalog ? "音色目录" : "当前项目";
+  document.querySelector("#sidebarAudioInspectionButton").classList.toggle("is-active", showInspection);
+  elements.projectSummaryLabel.textContent = showCatalog ? "音色目录" : showInspection ? "音频工具" : "当前项目";
   elements.projectSummaryTitle.textContent = showCatalog
     ? catalogVoices.length ? `${catalogVoices.length} 个在线音色` : "全部在线音色"
-    : "默认语音项目";
+    : showInspection ? "检测、剪辑与拼接" : "默认语音项目";
   closeSidebar();
   window.scrollTo({ top: 0, behavior: document.body.classList.contains("reduce-motion") ? "auto" : "smooth" });
 }
@@ -840,6 +891,7 @@ async function loadVoices() {
   elements.voicePresets.replaceChildren();
   elements.generateButton.disabled = true;
   elements.bottomGenerateButton.disabled = true;
+  elements.longTextButton.disabled = true;
   showError();
   try {
     const locale = localeControl.value;
@@ -862,8 +914,9 @@ async function loadVoices() {
     const preferredVoice = voicesByName.has(defaultVoice) ? defaultVoice : payload.voices[0]?.shortName;
     if (preferredVoice) voiceControl.setValue(preferredVoice);
     voiceControl.setDisabled(payload.voices.length === 0);
-    elements.generateButton.disabled = payload.voices.length === 0 || batchRunning;
-    elements.bottomGenerateButton.disabled = payload.voices.length === 0 || batchRunning;
+    elements.generateButton.disabled = payload.voices.length === 0 || batchRunning || longGenerationRunning;
+    elements.bottomGenerateButton.disabled = payload.voices.length === 0 || batchRunning || longGenerationRunning;
+    elements.longTextButton.disabled = payload.voices.length === 0 || batchRunning || longGenerationRunning;
     if (payload.voices.length === 0) showError("该语言暂时没有可用音色");
     updateVoiceSummary();
     renderBatch();
@@ -993,6 +1046,7 @@ function setCurrentAudio({ id = null, url, text, voiceName, voice, voiceGender =
 }
 
 async function synthesize() {
+  if (singleGenerationBusy || batchRunning || longGenerationRunning) return;
   const text = elements.textInput.value.trim();
   if (!text) {
     showError("请输入需要转换的文字");
@@ -1405,13 +1459,15 @@ function renderBatch() {
   elements.stopBatchButton.hidden = !batchRunning;
   elements.stopBatchButton.disabled = !batchRunning || batchCancellationRequested;
   elements.stopBatchButton.querySelector("span").textContent = batchCancellationRequested ? "正在停止" : "停止生成";
-  elements.startBatchButton.disabled = batchRunning || singleGenerationBusy || !hasRunnable || !voiceControl.value;
+  elements.startBatchButton.disabled = batchRunning || singleGenerationBusy || longGenerationRunning || !hasRunnable || !voiceControl.value;
   elements.clearBatchButton.disabled = batchRunning;
-  elements.importFilesButton.disabled = batchRunning;
+  elements.importFilesButton.disabled = batchRunning || longGenerationRunning;
+  elements.longTextButton.disabled = batchRunning || singleGenerationBusy || longGenerationRunning || !voiceControl.value;
   refreshIcons();
 }
 
 async function importBatchFiles() {
+  if (batchRunning || longGenerationRunning) return;
   showError();
   try {
     const selected = await open({
@@ -1444,8 +1500,13 @@ async function importBatchFiles() {
         name: file.name,
         text: file.text,
         characterCount: file.characterCount,
+        encoding: file.encoding,
         status: empty || overLimit ? "skipped" : "pending",
-        detail: empty ? "文件内容为空" : overLimit ? `超过 ${maxTextLength.toLocaleString("zh-CN")} 字限制` : "",
+        detail: empty
+          ? "文件内容为空"
+          : overLimit
+            ? `超过 ${maxTextLength.toLocaleString("zh-CN")} 字限制`
+            : file.encoding === "UTF-8" ? "" : `已自动识别并转换 ${file.encoding} 编码`,
         recordId: "",
         exportedPath: "",
       });
@@ -1466,6 +1527,198 @@ function currentSynthesisOptions(text) {
     volume: signedValue(document.querySelector("#volumeInput").value, "%"),
     pitch: signedValue(document.querySelector("#pitchInput").value, "Hz"),
   };
+}
+
+function longTaskTime(value, includeDate = false) {
+  if (!value) return "--";
+  return includeDate
+    ? value.toLocaleString("zh-CN", { hour12: false })
+    : value.toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+function addLongTaskLog(message, level = "info") {
+  if (!longTask) return;
+  longTask.logs.push({ time: new Date(), message, level });
+}
+
+function renderLongTask() {
+  elements.longTextPanel.hidden = !longTask;
+  if (!longTask) return;
+  const total = Math.max(0, longTask.total || 0);
+  const completed = Math.min(total, Math.max(0, longTask.completed || 0));
+  const percent = total ? (completed / total) * 100 : 0;
+  elements.longTextFileName.textContent = longTask.name;
+  elements.longTextMeta.textContent = `${longTask.characterCount.toLocaleString("zh-CN")} 字 · ${total} 个分段 · ${longTask.encoding} · 并发 3`;
+  elements.longTextProgressText.textContent = `已成功 ${completed} / ${total}`;
+  elements.longTextPercent.textContent = `${percent.toFixed(2)}%`;
+  elements.longTextProgressBar.max = Math.max(1, total);
+  elements.longTextProgressBar.value = completed;
+  elements.longTextLogCharacters.textContent = longTask.characterCount.toLocaleString("zh-CN");
+  elements.longTextLogSegments.textContent = total.toLocaleString("zh-CN");
+  elements.longTextLogSuccess.textContent = completed.toLocaleString("zh-CN");
+  elements.longTextLogFailed.textContent = longTask.failedChunks.size.toLocaleString("zh-CN");
+  elements.longTextLogCompletedAt.textContent = longTaskTime(longTask.completedAt, true);
+  elements.longTextStatus.textContent = longTask.detail;
+  elements.longTextStatus.className = `long-text-status is-${longTask.status}`;
+  elements.stopLongTextButton.hidden = !longGenerationRunning;
+  elements.stopLongTextButton.disabled = longTask.status === "cancelled";
+  elements.stopLongTextButton.querySelector("span").textContent = longTask.status === "cancelled" ? "正在停止" : "停止生成";
+  elements.downloadLongTextButton.hidden = !longTask.recordId;
+  const logFragment = document.createDocumentFragment();
+  for (const entry of longTask.logs) {
+    const item = document.createElement("li");
+    item.className = `long-text-log-item is-${entry.level}`;
+    const time = document.createElement("time");
+    time.dateTime = entry.time.toISOString();
+    time.textContent = longTaskTime(entry.time);
+    const message = document.createElement("span");
+    message.textContent = entry.message;
+    item.append(time, message);
+    logFragment.append(item);
+  }
+  elements.longTextLogList.replaceChildren(logFragment);
+  elements.longTextLogList.scrollTop = elements.longTextLogList.scrollHeight;
+  refreshIcons();
+}
+
+async function importLongText() {
+  if (singleGenerationBusy || batchRunning || longGenerationRunning || !voiceControl.value) return;
+  showError();
+  try {
+    const selected = await open({
+      multiple: false,
+      directory: false,
+      title: "选择 50 万字以内的超长文本",
+      filters: [{ name: "文本文件", extensions: ["txt", "text", "md", "markdown"] }],
+    });
+    if (!selected || Array.isArray(selected)) return;
+    const info = await invoke("inspect_long_text_file", { path: selected });
+    const accepted = await askForConfirmation(
+      "开始超长文字生成？",
+      `${info.name} 共 ${info.characterCount.toLocaleString("zh-CN")} 字，将拆分为 ${info.segmentCount} 段并以 3 个任务并发生成。过长可能导致生成失败，是否继续？`,
+      { acceptLabel: "继续生成", danger: false },
+    );
+    if (!accepted) return;
+    await startLongTextGeneration(selected, info);
+  } catch (error) {
+    const normalized = normalizedNativeError(error, "超长文本导入失败");
+    showError(normalized.message, normalized.detail);
+  }
+}
+
+async function startLongTextGeneration(path, info) {
+  longGenerationRunning = true;
+  const jobId = globalThis.crypto?.randomUUID
+    ? globalThis.crypto.randomUUID().replaceAll("-", "")
+    : `long-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  longTask = {
+    jobId,
+    name: info.name,
+    characterCount: info.characterCount,
+    encoding: info.encoding,
+    total: info.segmentCount,
+    completed: 0,
+    status: "running",
+    detail: "正在生成",
+    recordId: "",
+    exportedPath: "",
+    failedChunks: new Set(),
+    completedAt: null,
+    logs: [],
+  };
+  addLongTaskLog(`任务开始：总字数 ${info.characterCount.toLocaleString("zh-CN")}`);
+  addLongTaskLog(`已自动识别文本编码：${info.encoding}`);
+  addLongTaskLog(`文本已分割为 ${info.segmentCount.toLocaleString("zh-CN")} 个文件，每个文件不超过 5000 字`);
+  showError();
+  renderBatch();
+  renderLongTask();
+  elements.longTextPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+  const progress = new Channel();
+  progress.onmessage = (message) => {
+    if (!longTask || longTask.jobId !== jobId) return;
+    if (message.total) longTask.total = message.total;
+    if (message.state === "completed") {
+      longTask.completed = message.completed;
+      longTask.detail = "正在生成";
+      addLongTaskLog(`第 ${message.chunkIndex} 段生成成功，当前成功 ${message.completed}/${longTask.total}`, "success");
+    } else if (message.state === "retrying") {
+      longTask.detail = `第 ${message.chunkIndex} 段正在重试 ${message.retryCount}/3`;
+      addLongTaskLog(`第 ${message.chunkIndex} 段生成失败，正在重试 ${message.retryCount}/3`, "warning");
+    } else if (message.state === "failed") {
+      longTask.failedChunks.add(message.chunkIndex);
+      longTask.detail = `第 ${message.chunkIndex} 段生成失败`;
+      addLongTaskLog(`第 ${message.chunkIndex} 段重试 3 次后仍生成失败`, "error");
+    } else if (message.state === "merging") {
+      longTask.completed = message.completed;
+      longTask.detail = "正在合并音频";
+      addLongTaskLog(`全部 ${message.completed} 个分段生成成功，开始合并音频`, "success");
+    }
+    renderLongTask();
+  };
+
+  try {
+    const record = await invoke("synthesize_long_text", {
+      path,
+      jobId,
+      options: currentSynthesisOptions(""),
+      onProgress: progress,
+    });
+    longTask.recordId = record.id;
+    longTask.completed = longTask.total;
+    longTask.status = "success";
+    longTask.detail = "合并完成";
+    longTask.completedAt = new Date();
+    addLongTaskLog(`音频合并完成，成功 ${longTask.completed}，失败 ${longTask.failedChunks.size}`, "success");
+    addLongTaskLog(`完成时间：${longTaskTime(longTask.completedAt, true)}`, "success");
+    if (isDesktopApp && exportDirectory) {
+      try {
+        longTask.exportedPath = await exportRecordToConfiguredDirectory(record.id);
+        longTask.detail = "已合并并导出";
+        addLongTaskLog(`合并音频已导出到 ${longTask.exportedPath}`, "success");
+      } catch (error) {
+        longTask.detail = "已合并，自动导出失败";
+        addLongTaskLog("合并音频自动导出失败，可点击按钮重新导出", "error");
+        const normalized = normalizedNativeError(error, "合并音频自动导出失败");
+        showError(normalized.message, normalized.detail);
+      }
+    }
+  } catch (error) {
+    const normalized = normalizedNativeError(error, "超长文字语音生成失败");
+    const cancelled = /任务已取消|cancelled|canceled/i.test(normalized.detail);
+    longTask.status = cancelled ? "cancelled" : "error";
+    longTask.detail = cancelled ? "已停止" : "生成失败";
+    longTask.completedAt = new Date();
+    addLongTaskLog(
+      cancelled
+        ? `任务已停止：成功 ${longTask.completed}，失败 ${longTask.failedChunks.size}`
+        : `任务生成失败：成功 ${longTask.completed}，失败 ${longTask.failedChunks.size}`,
+      cancelled ? "warning" : "error",
+    );
+    addLongTaskLog(`完成时间：${longTaskTime(longTask.completedAt, true)}`, cancelled ? "warning" : "error");
+    if (!cancelled) showError("超长文字语音生成失败", normalized.detail);
+  } finally {
+    longGenerationRunning = false;
+    await loadHistory();
+    elements.generateButton.disabled = singleGenerationBusy || batchRunning || !voiceControl.value;
+    elements.bottomGenerateButton.disabled = singleGenerationBusy || batchRunning || !voiceControl.value;
+    renderBatch();
+    renderLongTask();
+  }
+}
+
+async function stopLongTextGeneration() {
+  if (!longGenerationRunning || !longTask || longTask.status === "cancelled") return;
+  longTask.status = "cancelled";
+  longTask.detail = "正在停止";
+  addLongTaskLog("收到停止请求，正在取消运行中的分段", "warning");
+  renderLongTask();
+  try {
+    await invoke("cancel_long_text", { jobId: longTask.jobId });
+  } catch (error) {
+    const normalized = normalizedNativeError(error, "停止超长任务失败");
+    showError(normalized.message, normalized.detail);
+  }
 }
 
 async function runBatchItem(item, options, batchId) {
@@ -1520,7 +1773,7 @@ async function stopBatch() {
 }
 
 async function startBatch() {
-  if (batchRunning || !voiceControl.value) return;
+  if (batchRunning || singleGenerationBusy || longGenerationRunning || !voiceControl.value) return;
   const queue = batchItems.filter((item) => ["pending", "error", "cancelled"].includes(item.status));
   if (queue.length === 0) return;
   batchRunning = true;
@@ -1563,8 +1816,8 @@ async function startBatch() {
     batchRunning = false;
     batchRunId = "";
     batchCancellationRequested = false;
-    elements.generateButton.disabled = singleGenerationBusy || !voiceControl.value;
-    elements.bottomGenerateButton.disabled = singleGenerationBusy || !voiceControl.value;
+    elements.generateButton.disabled = singleGenerationBusy || longGenerationRunning || !voiceControl.value;
+    elements.bottomGenerateButton.disabled = singleGenerationBusy || longGenerationRunning || !voiceControl.value;
     renderBatch();
   }
 }
@@ -1713,6 +1966,11 @@ for (const [inputId, outputId, suffix, displaySuffix] of [
 
 elements.textInput.addEventListener("input", updateCharacterCount);
 elements.importFilesButton.addEventListener("click", importBatchFiles);
+elements.longTextButton.addEventListener("click", importLongText);
+elements.stopLongTextButton.addEventListener("click", stopLongTextGeneration);
+elements.downloadLongTextButton.addEventListener("click", () => {
+  if (longTask?.recordId) downloadHistory(longTask.recordId);
+});
 elements.startBatchButton.addEventListener("click", startBatch);
 elements.stopBatchButton.addEventListener("click", stopBatch);
 elements.clearBatchButton.addEventListener("click", () => {
@@ -1744,6 +2002,10 @@ document.querySelector("#sidebarAdvancedButton").addEventListener("click", openA
 document.querySelector("#sidebarVoiceCatalogButton").addEventListener("click", () => {
   showAppView("catalog");
   loadVoiceCatalog();
+});
+document.querySelector("#sidebarAudioInspectionButton").addEventListener("click", () => {
+  showAppView("inspection");
+  audioInspection.prepare();
 });
 document.querySelector("#bottomApiButton").addEventListener("click", openApiDialog);
 document.querySelector("#catalogRetryButton").addEventListener("click", loadVoiceCatalog);
@@ -1864,6 +2126,7 @@ voiceControl = createUiSelect(elements.voiceSelect, updateVoiceSummary);
 catalogLanguageControl = createUiSelect(elements.catalogLanguageSelect, renderVoiceCatalog);
 localeControl.setOptions(languageOptions);
 localeControl.setValue("zh-CN");
+const audioInspection = initializeAudioInspection(refreshIcons);
 restoreAccessibilitySettings();
 restoreExportDirectory();
 restoreDraft();
@@ -1872,5 +2135,6 @@ updateCharacterCount();
 createWaveform();
 refreshIcons();
 renderBatch();
+renderLongTask();
 loadAppInformation();
 loadVoices().then(loadHistory);

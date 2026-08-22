@@ -6,11 +6,11 @@ mod api;
 use std::{path::PathBuf, sync::Arc};
 
 use core::{
-    AppCore, AudioPayload, BatchTextFile, HistoryRecord, HistoryResponse, SynthesisOptions,
-    SynthesisResult, VoicesResponse,
+    AppCore, AudioPayload, BatchTextFile, HistoryRecord, HistoryResponse, LongSynthesisProgress,
+    LongTextFileInfo, SynthesisOptions, SynthesisResult, VoicesResponse,
 };
 use serde::Serialize;
-use tauri::{Manager, State};
+use tauri::{ipc::Channel, Manager, State};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,6 +60,13 @@ async fn cancel_batch(core: State<'_, Arc<AppCore>>, batch_id: String) -> Result
 }
 
 #[tauri::command]
+async fn cancel_long_text(core: State<'_, Arc<AppCore>>, job_id: String) -> Result<bool, String> {
+    core.cancel_active_batch(&job_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn finish_batch(core: State<'_, Arc<AppCore>>, batch_id: String) -> Result<(), String> {
     core.finish_batch(&batch_id)
         .await
@@ -71,6 +78,38 @@ async fn read_batch_text_files(paths: Vec<String>) -> Result<Vec<BatchTextFile>,
     core::read_text_files(paths)
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn inspect_long_text_file(path: String) -> Result<LongTextFileInfo, String> {
+    core::read_long_text_file(&path)
+        .await
+        .map(|file| file.info)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn synthesize_long_text(
+    core: State<'_, Arc<AppCore>>,
+    path: String,
+    job_id: String,
+    mut options: SynthesisOptions,
+    on_progress: Channel<LongSynthesisProgress>,
+) -> Result<HistoryRecord, String> {
+    let file = core::read_long_text_file(&path)
+        .await
+        .map_err(|error| error.to_string())?;
+    options.text = file.text;
+    core.synthesize_long_and_store(
+        &job_id,
+        options,
+        Arc::new(move |progress| {
+            let _ = on_progress.send(progress);
+        }),
+    )
+    .await
+    .map(|result| result.record)
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -146,6 +185,7 @@ fn app_information() -> AppInformation {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
@@ -160,8 +200,11 @@ pub fn run() {
             synthesize,
             synthesize_batch_item,
             cancel_batch,
+            cancel_long_text,
             finish_batch,
             read_batch_text_files,
+            inspect_long_text_file,
+            synthesize_long_text,
             list_history,
             read_history_audio,
             delete_history,

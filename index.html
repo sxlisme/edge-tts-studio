@@ -23,6 +23,7 @@
         <nav class="sidebar-nav" aria-label="主要导航">
           <button class="sidebar-link is-active" id="sidebarWorkspaceButton" type="button" data-scroll-target="workspaceTop"><i data-lucide="layout-dashboard"></i><span>语音工作台</span></button>
           <button class="sidebar-link" id="sidebarVoiceCatalogButton" type="button"><i data-lucide="library-big"></i><span>音色展示</span></button>
+          <button class="sidebar-link" id="sidebarAudioInspectionButton" type="button"><i data-lucide="scan-line"></i><span>音频检测</span></button>
           <button class="sidebar-link" id="sidebarApiButton" type="button"><i data-lucide="braces"></i><span>API 接口</span></button>
           <button class="sidebar-link" id="sidebarAdvancedButton" type="button"><i data-lucide="settings-2"></i><span>高级设置</span></button>
         </nav>
@@ -72,6 +73,7 @@
                 <div class="input-actions">
                   <button class="button button-quiet compact-button" id="clearTextButton" type="button"><i data-lucide="eraser"></i><span>清空文本</span></button>
                   <button class="button button-quiet compact-button" id="importFilesButton" type="button"><i data-lucide="files"></i><span>导入文件</span></button>
+                  <button class="button button-quiet compact-button" id="longTextButton" type="button"><i data-lucide="file-audio"></i><span>50 万字超长生成</span></button>
                 </div>
                 <span class="draft-status" id="draftStatus"></span>
               </div>
@@ -154,6 +156,36 @@
             <ol class="batch-list" id="batchList"></ol>
           </section>
 
+          <section class="tool-panel long-text-panel" id="longTextPanel" aria-labelledby="longTextTitle" hidden>
+            <div class="panel-heading long-text-heading">
+              <div><span class="panel-kicker">超长任务</span><h2 id="longTextTitle">超长文字语音生成</h2></div>
+              <div class="long-text-actions">
+                <button class="button button-danger compact-button" id="stopLongTextButton" type="button" hidden><i data-lucide="square"></i><span>停止生成</span></button>
+                <button class="button button-primary compact-button" id="downloadLongTextButton" type="button" hidden><i data-lucide="download"></i><span>导出合并音频</span></button>
+              </div>
+            </div>
+            <div class="long-text-summary">
+              <div class="long-text-file"><i data-lucide="file-audio"></i><div><strong id="longTextFileName"></strong><span id="longTextMeta"></span></div></div>
+              <span class="long-text-status" id="longTextStatus">准备生成</span>
+            </div>
+            <div class="long-text-progress" aria-live="polite">
+              <div><span id="longTextProgressText">已成功 0 / 0</span><strong id="longTextPercent">0.00%</strong></div>
+              <progress id="longTextProgressBar" value="0" max="1"></progress>
+            </div>
+            <p class="long-text-warning"><i data-lucide="triangle-alert"></i><span>过长可能导致生成失败。系统会按标点或空格切分，每段不超过 5000 字，3 个任务并发生成，单段失败后重试 3 次。</span></p>
+            <section class="long-text-log" aria-labelledby="longTextLogTitle">
+              <div class="long-text-log-heading"><i data-lucide="scroll-text"></i><strong id="longTextLogTitle">任务日志</strong></div>
+              <dl class="long-text-log-summary">
+                <div><dt>总字数</dt><dd id="longTextLogCharacters">0</dd></div>
+                <div><dt>分段文件</dt><dd id="longTextLogSegments">0</dd></div>
+                <div><dt>当前成功</dt><dd id="longTextLogSuccess">0</dd></div>
+                <div><dt>失败数量</dt><dd id="longTextLogFailed">0</dd></div>
+                <div><dt>完成时间</dt><dd id="longTextLogCompletedAt">--</dd></div>
+              </dl>
+              <ol class="long-text-log-list" id="longTextLogList" aria-live="polite"></ol>
+            </section>
+          </section>
+
           <section class="tool-panel player-panel" id="previewPanel" aria-labelledby="previewTitle">
             <div class="panel-heading player-heading">
               <div><span class="panel-kicker">预览</span><h2 id="previewTitle">试听播放</h2></div>
@@ -221,6 +253,68 @@
             <div class="catalog-error" id="catalogError" hidden><i data-lucide="triangle-alert"></i><span id="catalogErrorMessage">音色载入失败</span><button class="button button-quiet compact-button" id="catalogRetryButton" type="button">重新载入</button></div>
             <div class="catalog-empty" id="catalogEmpty" hidden><i data-lucide="search-x"></i><span>没有匹配的音色</span></div>
             <ol class="catalog-list" id="catalogList"></ol>
+          </section>
+        </main>
+
+        <main class="content audio-inspection-view" id="audioInspectionView" hidden>
+          <section class="inspection-heading" aria-labelledby="audioInspectionTitle">
+            <div><span class="panel-kicker">检测与编辑</span><h1 id="audioInspectionTitle">音频检测</h1><p>检查静音、低音量和削波，并按选区重新剪辑拼接</p></div>
+            <div class="inspection-heading-actions">
+              <input id="audioFileInput" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac" multiple hidden>
+              <button class="button button-quiet" id="importAudioButton" type="button"><i data-lucide="file-plus-2"></i><span>导入音频</span></button>
+              <button class="button button-primary" id="exportCompositionButton" type="button" disabled><i data-lucide="download"></i><span>导出合成 WAV</span></button>
+            </div>
+          </section>
+
+          <div class="inspection-layout">
+            <section class="tool-panel inspection-source-panel" aria-labelledby="inspectionSourceTitle">
+              <div class="panel-heading"><div><span class="panel-kicker">素材</span><h2 id="inspectionSourceTitle">已导入音频 <span id="inspectionSourceCount">0</span></h2></div></div>
+              <div class="inspection-empty compact-empty" id="inspectionSourceEmpty"><i data-lucide="file-audio"></i><span>导入一个或多个音频开始检测</span></div>
+              <ol class="inspection-source-list" id="inspectionSourceList"></ol>
+            </section>
+
+            <section class="tool-panel anomaly-panel" aria-labelledby="anomalyTitle">
+              <div class="panel-heading"><div><span class="panel-kicker">自动检查</span><h2 id="anomalyTitle">异常提示 <span id="anomalyCount">0</span></h2></div><span class="inspection-badge" id="inspectionHealth">等待检测</span></div>
+              <p class="inspection-rule">连续低于 -54 dBFS 且超过 3 秒视为静音异常</p>
+              <div class="inspection-empty compact-empty" id="anomalyEmpty"><i data-lucide="shield-check"></i><span>尚未检测音频</span></div>
+              <ol class="anomaly-list" id="anomalyList"></ol>
+            </section>
+          </div>
+
+          <section class="tool-panel audio-analysis-panel" aria-labelledby="analysisTitle">
+            <div class="panel-heading analysis-heading">
+              <div><span class="panel-kicker">波形与频谱</span><h2 id="analysisTitle">音频时间轴</h2></div>
+              <div class="analysis-file-meta" id="analysisFileMeta">未载入音频</div>
+            </div>
+            <div class="inspection-loading" id="inspectionLoading" hidden><i data-lucide="loader-circle"></i><strong>正在解码并检测音频</strong><span>较长音频需要更多处理时间</span></div>
+            <div class="analysis-empty" id="analysisEmpty"><span class="empty-icon"><i data-lucide="waves"></i></span><p>导入音频后将在这里显示可缩放波形与频谱</p></div>
+            <div class="analysis-workspace" id="analysisWorkspace" hidden>
+              <div class="waveform-label-row"><span>波形</span><span id="waveformTimeLabel">00:00.000 / 00:00.000</span></div>
+              <div class="inspection-waveform" id="inspectionWaveform"></div>
+              <div class="waveform-label-row spectrum-label"><span>频谱</span><span>0 Hz - 20 kHz</span></div>
+              <div class="inspection-spectrogram" id="inspectionSpectrogram"></div>
+              <div class="analysis-controls">
+                <button class="player-button small-player-button" id="inspectionPlayButton" type="button" aria-label="播放或暂停"><i class="inspection-play-icon" data-lucide="play"></i><i class="inspection-pause-icon" data-lucide="pause"></i></button>
+                <button class="button button-quiet compact-button" id="previewSelectionButton" type="button" disabled><i data-lucide="headphones"></i><span>试听选区</span></button>
+                <button class="button button-quiet compact-button" id="selectAllAudioButton" type="button" disabled><i data-lucide="scan"></i><span>全选</span></button>
+                <div class="selection-time-control" aria-label="选区时间">
+                  <label>开始 <input id="selectionStartInput" type="number" min="0" step="0.001" value="0.000" disabled><span>秒</span></label>
+                  <label>结束 <input id="selectionEndInput" type="number" min="0" step="0.001" value="0.000" disabled><span>秒</span></label>
+                </div>
+                <label class="inspection-zoom-control"><i data-lucide="zoom-out"></i><input id="inspectionZoomInput" type="range" min="10" max="300" step="10" value="40" disabled aria-label="时间轴缩放"><i data-lucide="zoom-in"></i><output id="inspectionZoomOutput">40 px/s</output></label>
+                <button class="button button-primary compact-button" id="addSelectionButton" type="button" disabled><i data-lucide="scissors"></i><span>加入拼接</span></button>
+              </div>
+            </div>
+          </section>
+
+          <section class="tool-panel composition-panel" aria-labelledby="compositionTitle">
+            <div class="panel-heading composition-heading">
+              <div><span class="panel-kicker">非破坏性剪辑</span><h2 id="compositionTitle">拼接列表 <span id="compositionCount">0</span></h2></div>
+              <div class="composition-summary"><span id="compositionDuration">总时长 00:00.000</span><button class="button button-quiet compact-button" id="clearCompositionButton" type="button" disabled><i data-lucide="trash-2"></i><span>清空</span></button></div>
+            </div>
+            <div class="inspection-empty compact-empty" id="compositionEmpty"><i data-lucide="list-music"></i><span>拖拽选择时间段，再加入拼接列表</span></div>
+            <ol class="composition-list" id="compositionList"></ol>
+            <div class="composition-status" id="compositionStatus" aria-live="polite"></div>
           </section>
         </main>
 

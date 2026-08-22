@@ -5,19 +5,29 @@ use std::{
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use chardetng::EncodingDetector;
 use chrono::{Local, SecondsFormat};
+use encoding_rs::{Encoding, UTF_16BE, UTF_16LE};
+use futures_util::{stream, StreamExt};
 use msedge_tts::{
     tts::{client::tokio_runtime::connect_async, SpeechConfig},
     voice::tokio_runtime::get_voices_list_async,
 };
 use quick_xml::escape::escape;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, RwLock};
+use tokio::{
+    io::AsyncWriteExt,
+    sync::{Mutex, RwLock},
+};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 const DEFAULT_VOICE: &str = "zh-CN-XiaoxiaoNeural";
 const MAX_TEXT_LENGTH: usize = 10_000;
+const MAX_LONG_TEXT_LENGTH: usize = 500_000;
+const LONG_TEXT_CHUNK_LENGTH: usize = 5_000;
+const LONG_TEXT_CONCURRENCY: usize = 3;
+const LONG_TEXT_RETRIES: usize = 3;
 const MAX_HISTORY_ITEMS: usize = 50;
 const MAX_BATCH_FILES: usize = 50;
 const MAX_TEXT_FILE_BYTES: u64 = 2 * 1024 * 1024;
@@ -38,6 +48,12 @@ pub enum CoreError {
     Cancelled,
     #[error("在线语音服务请求失败：{0}")]
     Speech(String),
+    #[error("第 {chunk}/{total} 个分段重试 3 次后仍生成失败：{detail}")]
+    LongSynthesis {
+        chunk: usize,
+        total: usize,
+        detail: String,
+    },
     #[error("本地文件操作失败：{0}")]
     Io(#[from] std::io::Error),
     #[error("本地记录格式错误：{0}")]
@@ -130,6 +146,31 @@ pub struct BatchTextFile {
     pub name: String,
     pub text: String,
     pub character_count: usize,
+    pub encoding: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LongTextFileInfo {
+    pub name: String,
+    pub character_count: usize,
+    pub segment_count: usize,
+    pub encoding: String,
+}
+
+pub struct LongTextFile {
+    pub info: LongTextFileInfo,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LongSynthesisProgress {
+    pub completed: usize,
+    pub total: usize,
+    pub chunk_index: usize,
+    pub retry_count: usize,
+    pub state: &'static str,
 }
 
 #[derive(Default)]
@@ -270,6 +311,120 @@ impl AppCore {
             .await
     }
 
+    pub async fn synthesize_long_and_store(
+        &self,
+        batch_id: &str,
+        options: SynthesisOptions,
+        on_progress: std::sync::Arc<dyn Fn(LongSynthesisProgress) + Send + Sync>,
+    ) -> CoreResult<StoredSynthesis> {
+        validate_batch_id(batch_id)?;
+        let cancellation = {
+            let mut cancellations = self.batch_cancellations.lock().await;
+            cancellations
+                .entry(batch_id.to_owned())
+                .or_default()
+                .clone()
+        };
+        let temporary_directory = self.data_dir.join("long-jobs").join(batch_id);
+        remove_directory_if_exists(&temporary_directory).await?;
+        tokio::fs::create_dir_all(&temporary_directory).await?;
+
+        let result = self
+            .synthesize_long_inner(options, &temporary_directory, &cancellation, on_progress)
+            .await;
+        self.batch_cancellations.lock().await.remove(batch_id);
+        let _ = remove_directory_if_exists(&temporary_directory).await;
+        result
+    }
+
+    async fn synthesize_long_inner(
+        &self,
+        options: SynthesisOptions,
+        temporary_directory: &Path,
+        cancellation: &CancellationToken,
+        on_progress: std::sync::Arc<dyn Fn(LongSynthesisProgress) + Send + Sync>,
+    ) -> CoreResult<StoredSynthesis> {
+        let validated = validate_synthesis_options(options, MAX_LONG_TEXT_LENGTH)?;
+        let chunks = split_long_text(&validated.text, LONG_TEXT_CHUNK_LENGTH);
+        let total = chunks.len();
+        on_progress(LongSynthesisProgress {
+            completed: 0,
+            total,
+            chunk_index: 0,
+            retry_count: 0,
+            state: "started",
+        });
+
+        // Keep only three network requests active and persist each result immediately.
+        let tasks = stream::iter(chunks.into_iter().enumerate())
+            .map(|(index, text)| {
+                let mut chunk_options = validated.clone();
+                chunk_options.text = text;
+                let cancellation = cancellation.clone();
+                let on_progress = on_progress.clone();
+                let segment_path = temporary_directory.join(format!("{index:06}.mp3"));
+                async move {
+                    let audio = synthesize_long_chunk(
+                        &chunk_options,
+                        index,
+                        total,
+                        &cancellation,
+                        &on_progress,
+                    )
+                    .await?;
+                    tokio::fs::write(segment_path, audio).await?;
+                    CoreResult::Ok(index)
+                }
+            })
+            .buffer_unordered(LONG_TEXT_CONCURRENCY);
+        tokio::pin!(tasks);
+
+        let mut completed = 0;
+        while let Some(result) = tasks.next().await {
+            let index = result?;
+            completed += 1;
+            on_progress(LongSynthesisProgress {
+                completed,
+                total,
+                chunk_index: index + 1,
+                retry_count: 0,
+                state: "completed",
+            });
+        }
+        if cancellation.is_cancelled() {
+            return Err(CoreError::Cancelled);
+        }
+        on_progress(LongSynthesisProgress {
+            completed,
+            total,
+            chunk_index: 0,
+            retry_count: 0,
+            state: "merging",
+        });
+
+        tokio::fs::create_dir_all(self.audio_dir()).await?;
+        let record_id = Uuid::new_v4().simple().to_string();
+        let audio_path = self.audio_path(&record_id);
+        let merged_path = temporary_directory.join("merged.mp3");
+        // Completion order is arbitrary, so merge the numbered segments in source order.
+        merge_audio_segments(temporary_directory, &merged_path, total, cancellation).await?;
+        if cancellation.is_cancelled() {
+            return Err(CoreError::Cancelled);
+        }
+        tokio::fs::rename(&merged_path, &audio_path).await?;
+
+        let size = tokio::fs::metadata(&audio_path).await?.len() as usize;
+        let record = self.history_record(&record_id, &validated, size).await;
+        if let Err(error) = self.store_existing_history_audio(&record).await {
+            remove_file_if_exists(&audio_path).await?;
+            return Err(error);
+        }
+        Ok(StoredSynthesis {
+            record,
+            audio: Vec::new(),
+        })
+    }
+
     pub async fn cancel_batch(&self, batch_id: &str) -> CoreResult<bool> {
         validate_batch_id(batch_id)?;
         let cancellation = {
@@ -282,6 +437,18 @@ impl AppCore {
         let was_cancelled = cancellation.is_cancelled();
         cancellation.cancel();
         Ok(!was_cancelled)
+    }
+
+    pub async fn cancel_active_batch(&self, batch_id: &str) -> CoreResult<bool> {
+        validate_batch_id(batch_id)?;
+        let cancellation = self.batch_cancellations.lock().await.get(batch_id).cloned();
+        if let Some(cancellation) = cancellation {
+            let was_cancelled = cancellation.is_cancelled();
+            cancellation.cancel();
+            Ok(!was_cancelled)
+        } else {
+            Ok(false)
+        }
     }
 
     pub async fn finish_batch(&self, batch_id: &str) -> CoreResult<()> {
@@ -312,6 +479,20 @@ impl AppCore {
             return Err(CoreError::Cancelled);
         }
 
+        let record_id = Uuid::new_v4().simple().to_string();
+        let record = self
+            .history_record(&record_id, &validated, audio.len())
+            .await;
+        self.store_history_audio(&record, &audio).await?;
+        Ok(StoredSynthesis { record, audio })
+    }
+
+    async fn history_record(
+        &self,
+        id: &str,
+        validated: &ValidatedOptions,
+        size: usize,
+    ) -> HistoryRecord {
         let voice_gender = {
             let cache = self.voice_cache.read().await;
             cache
@@ -321,8 +502,8 @@ impl AppCore {
                 .map(|voice| voice.gender.clone())
                 .unwrap_or_default()
         };
-        let record = HistoryRecord {
-            id: Uuid::new_v4().simple().to_string(),
+        HistoryRecord {
+            id: id.to_owned(),
             created_at: Local::now().to_rfc3339_opts(SecondsFormat::Secs, false),
             text: validated.text.clone(),
             voice: validated.voice.clone(),
@@ -331,10 +512,8 @@ impl AppCore {
             rate: format_signed(validated.rate, "%"),
             volume: format_signed(validated.volume, "%"),
             pitch: format_signed(validated.pitch, "Hz"),
-            size: audio.len(),
-        };
-        self.store_history_audio(&record, &audio).await?;
-        Ok(StoredSynthesis { record, audio })
+            size,
+        }
     }
 
     pub async fn history(&self) -> CoreResult<HistoryResponse> {
@@ -451,17 +630,23 @@ impl AppCore {
     }
 
     async fn store_history_audio(&self, record: &HistoryRecord, audio: &[u8]) -> CoreResult<()> {
-        let _guard = self.history_lock.lock().await;
         tokio::fs::create_dir_all(self.audio_dir()).await?;
         tokio::fs::write(self.audio_path(&record.id), audio).await?;
+
+        if let Err(error) = self.store_existing_history_audio(record).await {
+            remove_file_if_exists(&self.audio_path(&record.id)).await?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    async fn store_existing_history_audio(&self, record: &HistoryRecord) -> CoreResult<()> {
+        let _guard = self.history_lock.lock().await;
 
         let mut history = self.read_history_unlocked().await?;
         history.insert(0, record.clone());
         let expired = history.split_off(history.len().min(MAX_HISTORY_ITEMS));
-        if let Err(error) = self.write_history_unlocked(&history).await {
-            remove_file_if_exists(&self.audio_path(&record.id)).await?;
-            return Err(error);
-        }
+        self.write_history_unlocked(&history).await?;
         for old_record in expired {
             remove_file_if_exists(&self.audio_path(&old_record.id)).await?;
         }
@@ -555,20 +740,85 @@ pub async fn read_text_files(paths: Vec<String>) -> CoreResult<Vec<BatchTextFile
         }
 
         let data = tokio::fs::read(&path).await?;
-        let text = String::from_utf8(data)
-            .map_err(|_| CoreError::Validation(format!("{name} 不是 UTF-8 文本文件")))?
-            .trim_start_matches('\u{feff}')
-            .to_owned();
+        let (text, encoding) = decode_text_data(&data, &name)?;
         files.push(BatchTextFile {
             character_count: text.chars().count(),
             name,
             text,
+            encoding,
         });
     }
     Ok(files)
 }
 
-#[derive(Debug)]
+fn decode_text_data(data: &[u8], name: &str) -> CoreResult<(String, String)> {
+    if let Ok(text) = std::str::from_utf8(data) {
+        return Ok((
+            text.trim_start_matches('\u{feff}').to_owned(),
+            "UTF-8".to_owned(),
+        ));
+    }
+
+    let (encoding, bom_length) = Encoding::for_bom(data).unwrap_or_else(|| {
+        let mut detector = EncodingDetector::new();
+        detector.feed(data, true);
+        (detector.guess(None, true), 0)
+    });
+    let (decoded, had_errors) = encoding.decode_without_bom_handling(&data[bom_length..]);
+    if had_errors || decoded_text_looks_binary(&decoded) {
+        return Err(CoreError::Validation(format!(
+            "{name} 的文本编码无法识别，请转换为 UTF-8、GBK、Big5 或带 BOM 的 UTF-16"
+        )));
+    }
+    let encoding_name = if encoding == UTF_16LE {
+        "UTF-16LE"
+    } else if encoding == UTF_16BE {
+        "UTF-16BE"
+    } else {
+        encoding.name()
+    };
+    Ok((decoded.into_owned(), encoding_name.to_owned()))
+}
+
+fn decoded_text_looks_binary(text: &str) -> bool {
+    let total = text.chars().count();
+    if total == 0 {
+        return false;
+    }
+    let suspicious = text
+        .chars()
+        .filter(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+        .count();
+    suspicious > 4 && suspicious * 100 > total
+}
+
+pub async fn read_long_text_file(path: &str) -> CoreResult<LongTextFile> {
+    let mut files = read_text_files(vec![path.to_owned()]).await?;
+    let file = files
+        .pop()
+        .ok_or_else(|| CoreError::Validation("请选择一个超长文本文件".to_owned()))?;
+    if file.text.trim().is_empty() {
+        return Err(CoreError::Validation("文件内容为空".to_owned()));
+    }
+    if file.character_count > MAX_LONG_TEXT_LENGTH {
+        return Err(CoreError::Validation(format!(
+            "超长文字不能超过 {MAX_LONG_TEXT_LENGTH} 个字符"
+        )));
+    }
+    let text = file.text.trim().to_owned();
+    let character_count = text.chars().count();
+    Ok(LongTextFile {
+        info: LongTextFileInfo {
+            name: file.name,
+            character_count,
+            segment_count: split_long_text(&text, LONG_TEXT_CHUNK_LENGTH).len(),
+            encoding: file.encoding,
+        },
+        text,
+    })
+}
+
+#[derive(Clone, Debug)]
 struct ValidatedOptions {
     text: String,
     voice: String,
@@ -581,31 +831,38 @@ impl TryFrom<SynthesisOptions> for ValidatedOptions {
     type Error = CoreError;
 
     fn try_from(options: SynthesisOptions) -> Result<Self, Self::Error> {
-        let text = options.text.trim().to_owned();
-        if text.is_empty() {
-            return Err(CoreError::Validation("请输入需要转换的文字".to_owned()));
-        }
-        if text.chars().count() > MAX_TEXT_LENGTH {
-            return Err(CoreError::Validation(format!(
-                "文字不能超过 {MAX_TEXT_LENGTH} 个字符"
-            )));
-        }
-        let voice = options.voice.trim().to_owned();
-        if voice.is_empty()
-            || !voice
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        {
-            return Err(CoreError::Validation("音色名称格式不正确".to_owned()));
-        }
-        Ok(Self {
-            text,
-            voice,
-            rate: parse_signed(&options.rate, "%", "语速")?,
-            volume: parse_signed(&options.volume, "%", "音量")?,
-            pitch: parse_signed(&options.pitch, "Hz", "音调")?,
-        })
+        validate_synthesis_options(options, MAX_TEXT_LENGTH)
     }
+}
+
+fn validate_synthesis_options(
+    options: SynthesisOptions,
+    max_text_length: usize,
+) -> CoreResult<ValidatedOptions> {
+    let text = options.text.trim().to_owned();
+    if text.is_empty() {
+        return Err(CoreError::Validation("请输入需要转换的文字".to_owned()));
+    }
+    if text.chars().count() > max_text_length {
+        return Err(CoreError::Validation(format!(
+            "文字不能超过 {max_text_length} 个字符"
+        )));
+    }
+    let voice = options.voice.trim().to_owned();
+    if voice.is_empty()
+        || !voice
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err(CoreError::Validation("音色名称格式不正确".to_owned()));
+    }
+    Ok(ValidatedOptions {
+        text,
+        voice,
+        rate: parse_signed(&options.rate, "%", "语速")?,
+        volume: parse_signed(&options.volume, "%", "音量")?,
+        pitch: parse_signed(&options.pitch, "Hz", "音调")?,
+    })
 }
 
 fn validate_batch_id(batch_id: &str) -> CoreResult<()> {
@@ -624,6 +881,95 @@ async fn synthesize_with_timeout(options: &ValidatedOptions) -> CoreResult<Vec<u
     tokio::time::timeout(SYNTHESIS_TIMEOUT, synthesize_online(options))
         .await
         .map_err(|_| CoreError::Timeout)?
+}
+
+async fn synthesize_long_chunk(
+    options: &ValidatedOptions,
+    index: usize,
+    total: usize,
+    cancellation: &CancellationToken,
+    on_progress: &std::sync::Arc<dyn Fn(LongSynthesisProgress) + Send + Sync>,
+) -> CoreResult<Vec<u8>> {
+    let mut last_error = None;
+    for retry_count in 0..=LONG_TEXT_RETRIES {
+        if retry_count > 0 {
+            on_progress(LongSynthesisProgress {
+                completed: 0,
+                total,
+                chunk_index: index + 1,
+                retry_count,
+                state: "retrying",
+            });
+        }
+        let result = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(CoreError::Cancelled),
+            result = synthesize_with_timeout(options) => result,
+        };
+        match result {
+            Ok(audio) if !audio.is_empty() => return Ok(audio),
+            Ok(_) => last_error = Some("没有返回音频数据".to_owned()),
+            Err(CoreError::Cancelled) => return Err(CoreError::Cancelled),
+            Err(error) => last_error = Some(error.to_string()),
+        }
+    }
+    on_progress(LongSynthesisProgress {
+        completed: 0,
+        total,
+        chunk_index: index + 1,
+        retry_count: LONG_TEXT_RETRIES,
+        state: "failed",
+    });
+    Err(CoreError::LongSynthesis {
+        chunk: index + 1,
+        total,
+        detail: last_error.unwrap_or_else(|| "未知错误".to_owned()),
+    })
+}
+
+fn split_long_text(text: &str, max_characters: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut remaining = text.trim();
+    while !remaining.is_empty() {
+        let mut safe_end = remaining.len();
+        let mut preferred_end = None;
+        let mut count = 0;
+        for (offset, character) in remaining.char_indices() {
+            count += 1;
+            if count > max_characters {
+                safe_end = offset;
+                break;
+            }
+            let end = offset + character.len_utf8();
+            if character.is_whitespace()
+                || matches!(
+                    character,
+                    '。' | '！'
+                        | '？'
+                        | '；'
+                        | '，'
+                        | '、'
+                        | '：'
+                        | '.'
+                        | '!'
+                        | '?'
+                        | ';'
+                        | ','
+                        | ':'
+                )
+            {
+                preferred_end = Some(end);
+            }
+        }
+        if safe_end == remaining.len() {
+            chunks.push(remaining.to_owned());
+            break;
+        }
+        let end = preferred_end.unwrap_or(safe_end);
+        chunks.push(remaining[..end].to_owned());
+        remaining = &remaining[end..];
+    }
+    chunks
 }
 
 async fn synthesize_online(options: &ValidatedOptions) -> CoreResult<Vec<u8>> {
@@ -734,6 +1080,34 @@ async fn remove_file_if_exists(path: &Path) -> CoreResult<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
     }
+}
+
+async fn remove_directory_if_exists(path: &Path) -> CoreResult<()> {
+    match tokio::fs::remove_dir_all(path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn merge_audio_segments(
+    segment_directory: &Path,
+    destination: &Path,
+    total: usize,
+    cancellation: &CancellationToken,
+) -> CoreResult<()> {
+    let mut merged = tokio::fs::File::create(destination).await?;
+    for index in 0..total {
+        let mut segment =
+            tokio::fs::File::open(segment_directory.join(format!("{index:06}.mp3"))).await?;
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(CoreError::Cancelled),
+            result = tokio::io::copy(&mut segment, &mut merged) => result?,
+        };
+    }
+    merged.flush().await?;
+    Ok(())
 }
 
 fn default_voice() -> String {
@@ -855,8 +1229,57 @@ mod tests {
     }
 
     #[test]
+    fn splits_long_text_by_character_count_and_keeps_all_content() {
+        let text = format!(
+            "{}。{} {}",
+            "中".repeat(4_999),
+            "文".repeat(4_999),
+            "a".repeat(20)
+        );
+        let chunks = split_long_text(&text, LONG_TEXT_CHUNK_LENGTH);
+
+        assert!(chunks.len() >= 3);
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.chars().count() <= LONG_TEXT_CHUNK_LENGTH));
+        assert_eq!(chunks.concat(), text);
+        assert!(chunks[0].ends_with('。'));
+    }
+
+    #[test]
+    fn rejects_long_text_over_half_a_million_characters() {
+        let options = synthesis_options(&"字".repeat(MAX_LONG_TEXT_LENGTH + 1));
+        assert!(validate_synthesis_options(options, MAX_LONG_TEXT_LENGTH).is_err());
+    }
+
+    #[test]
     fn removes_xml_incompatible_control_characters() {
         assert_eq!(remove_incompatible_characters("a\u{0001}b\nc"), "a b\nc");
+    }
+
+    #[test]
+    fn detects_and_decodes_gbk_text() {
+        let source = "这是一个使用 GBK 编码保存的中文文本文件。";
+        let (encoded, _, had_errors) = encoding_rs::GBK.encode(source);
+        assert!(!had_errors);
+
+        let (decoded, encoding) = decode_text_data(&encoded, "gbk.txt").unwrap();
+
+        assert_eq!(decoded, source);
+        assert_eq!(encoding, "GBK");
+    }
+
+    #[test]
+    fn decodes_utf16_text_with_a_byte_order_mark() {
+        let mut encoded = vec![0xff, 0xfe];
+        for unit in "UTF-16 中文文本".encode_utf16() {
+            encoded.extend_from_slice(&unit.to_le_bytes());
+        }
+
+        let (decoded, encoding) = decode_text_data(&encoded, "utf16.txt").unwrap();
+
+        assert_eq!(decoded, "UTF-16 中文文本");
+        assert_eq!(encoding, "UTF-16LE");
     }
 
     #[tokio::test]
@@ -935,6 +1358,24 @@ mod tests {
             .file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.starts_with("voice-studio-") && name.ends_with(".mp3")));
+    }
+
+    #[tokio::test]
+    async fn merges_audio_segments_in_source_order() {
+        let directory = tempfile::tempdir().expect("temporary directory should be available");
+        tokio::fs::write(directory.path().join("000000.mp3"), b"first")
+            .await
+            .unwrap();
+        tokio::fs::write(directory.path().join("000001.mp3"), b"second")
+            .await
+            .unwrap();
+        let destination = directory.path().join("merged.mp3");
+
+        merge_audio_segments(directory.path(), &destination, 2, &CancellationToken::new())
+            .await
+            .expect("segments should merge");
+
+        assert_eq!(tokio::fs::read(destination).await.unwrap(), b"firstsecond");
     }
 
     #[tokio::test]
