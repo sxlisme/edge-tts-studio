@@ -22,7 +22,7 @@
 
         <nav class="sidebar-nav" aria-label="主要导航">
           <button class="sidebar-link is-active" id="sidebarWorkspaceButton" type="button" data-scroll-target="workspaceTop"><i data-lucide="layout-dashboard"></i><span>语音工作台</span></button>
-          <button class="sidebar-link" id="sidebarWordLoopButton" type="button"><i data-lucide="repeat-2"></i><span>单词循环</span></button>
+          <button class="sidebar-link" id="sidebarWordLoopButton" type="button"><i data-lucide="repeat-2"></i><span>单词配音</span></button>
           <button class="sidebar-link" id="sidebarVoiceCatalogButton" type="button"><i data-lucide="library-big"></i><span>音色展示</span></button>
           <button class="sidebar-link" id="sidebarAudioInspectionButton" type="button"><i data-lucide="scan-line"></i><span>音频检测</span></button>
           <button class="sidebar-link" id="sidebarApiButton" type="button"><i data-lucide="braces"></i><span>API 接口</span></button>
@@ -266,13 +266,23 @@
 
         <main class="content word-loop-view" id="wordLoopView" hidden>
           <section class="word-loop-heading" aria-labelledby="wordLoopTitle">
-            <div><span class="panel-kicker">学习与记忆</span><h1 id="wordLoopTitle">单词循环</h1><p>一行输入一个单词或短句，自动重复朗读并按设定间隔合成音频</p></div>
+            <div><span class="panel-kicker">学习与记忆</span><h1 id="wordLoopTitle">单词配音</h1><p>一行输入一个单词或短句，自动重复朗读并按设定间隔合成音频</p></div>
             <div class="word-loop-heading-actions">
               <button class="button button-quiet" id="wordLoopImportButton" type="button"><i data-lucide="files"></i><span>导入 TXT</span></button>
-              <div class="word-loop-export-control">
-                <label class="sr-only" for="wordLoopExportFormat">导出格式</label>
-                <select id="wordLoopExportFormat" aria-label="导出格式"><option value="mp3">MP3</option><option value="wav">WAV</option></select>
-                <button class="button button-primary" id="wordLoopExportButton" type="button" disabled><i data-lucide="download"></i><span>导出 MP3</span></button>
+              <div class="word-loop-export-menu" id="wordLoopExportMenu">
+                <button class="button button-primary word-loop-export-trigger" id="wordLoopExportButton" type="button" disabled aria-haspopup="menu" aria-expanded="false">
+                  <i data-lucide="download"></i><span>导出音频</span><i class="export-chevron" data-lucide="chevron-down"></i>
+                </button>
+                <div class="word-loop-export-popover" id="wordLoopExportPopover" role="menu" hidden>
+                  <button class="word-loop-export-option" type="button" role="menuitem" data-word-loop-export-format="mp3">
+                    <span class="export-format-icon"><i data-lucide="file-audio"></i></span>
+                    <span><strong>导出 MP3</strong><small>体积更小，适合播放与分享</small></span>
+                  </button>
+                  <button class="word-loop-export-option" type="button" role="menuitem" data-word-loop-export-format="wav">
+                    <span class="export-format-icon"><i data-lucide="waves"></i></span>
+                    <span><strong>导出 WAV</strong><small>无损音频，适合后期编辑</small></span>
+                  </button>
+                </div>
               </div>
             </div>
           </section>
@@ -295,19 +305,56 @@ orange</textarea>
 
             <section class="tool-panel word-loop-settings-panel" aria-labelledby="wordLoopSettingsTitle">
               <div class="panel-heading"><div><span class="panel-kicker">朗读方式</span><h2 id="wordLoopSettingsTitle">循环设置</h2></div></div>
-              <div class="field word-loop-voice-field">
-                <label class="field-label" for="wordLoopVoiceSearch">朗读音色</label>
-                <div class="word-loop-voice-picker" id="wordLoopVoicePicker">
-                  <label class="word-loop-voice-search"><i data-lucide="search"></i><input id="wordLoopVoiceSearch" type="search" placeholder="搜索音色名称、语言或地区" autocomplete="off"><i data-lucide="chevron-down"></i></label>
-                  <div class="word-loop-voice-results" id="wordLoopVoiceResults" role="listbox" aria-label="选择朗读音色" hidden></div>
+
+              <div class="word-loop-subsection-heading"><span class="panel-kicker">声音选择</span><h3>朗读语言与音色</h3></div>
+              <div class="settings-grid word-loop-sound-selects">
+                <div class="field">
+                  <span class="field-label" id="wordLoopLocaleFieldLabel">语言选择</span>
+                  <div class="ui-select" id="wordLoopLocaleSelect">
+                    <button class="ui-select-trigger" type="button" disabled aria-haspopup="listbox" aria-expanded="false" aria-labelledby="wordLoopLocaleFieldLabel wordLoopLocaleSelectValue">
+                      <span class="select-prefix"><i data-lucide="globe-2"></i></span>
+                      <span class="ui-select-value" id="wordLoopLocaleSelectValue"><strong>正在载入语言</strong><small>请稍候</small></span>
+                      <i data-lucide="chevron-down"></i>
+                    </button>
+                    <div class="ui-select-popover" hidden>
+                      <label class="ui-select-search"><i data-lucide="search"></i><input type="search" placeholder="搜索语言" autocomplete="off" aria-label="搜索语言"></label>
+                      <div class="ui-select-options" role="listbox" aria-label="选择语言"></div>
+                    </div>
+                  </div>
                 </div>
-                <div class="word-loop-selected-voice" id="wordLoopSelectedVoice"><span class="voice-prefix">声</span><div><strong>正在载入音色</strong><small>请稍候</small></div></div>
+
+                <div class="field">
+                  <span class="field-label" id="wordLoopVoiceFieldLabel">音色选择</span>
+                  <div class="ui-select" id="wordLoopVoiceSelect">
+                    <button class="ui-select-trigger" type="button" disabled aria-haspopup="listbox" aria-expanded="false" aria-labelledby="wordLoopVoiceFieldLabel wordLoopVoiceSelectValue">
+                      <span class="select-prefix voice-prefix" id="wordLoopSelectVoiceAvatar">声</span>
+                      <span class="ui-select-value" id="wordLoopVoiceSelectValue"><strong>正在载入音色</strong><small>请稍候</small></span>
+                      <i data-lucide="chevron-down"></i>
+                    </button>
+                    <div class="ui-select-popover voice-select-popover" hidden>
+                      <label class="ui-select-search"><i data-lucide="search"></i><input type="search" placeholder="搜索中文名、性别或地区" autocomplete="off" aria-label="搜索音色"></label>
+                      <div class="ui-select-options" role="listbox" aria-label="选择朗读音色"></div>
+                    </div>
+                  </div>
+                </div>
               </div>
+
+              <div class="voice-library">
+                <div class="field-label">常用音色</div>
+                <div class="voice-presets" id="wordLoopVoicePresets" aria-label="单词配音常用音色"></div>
+              </div>
+
+              <div class="controls-grid word-loop-voice-controls">
+                <label class="field range-field"><span>语速 <output id="wordLoopRateOutput">0%</output></span><input id="wordLoopRate" type="range" min="-100" max="100" value="0" step="5"></label>
+                <label class="field range-field"><span>音调 <output id="wordLoopPitchOutput">0 Hz</output></span><input id="wordLoopPitch" type="range" min="-100" max="100" value="0" step="5"></label>
+                <label class="field range-field"><span>音量 <output id="wordLoopVolumeOutput">0%</output></span><input id="wordLoopVolume" type="range" min="-100" max="100" value="0" step="5"></label>
+              </div>
+
+              <div class="word-loop-section-heading"><span class="panel-kicker">播放方式</span><h3>循环参数</h3></div>
               <div class="word-loop-number-grid">
                 <label class="field"><span class="field-label">每个内容播放次数</span><span class="number-input"><input id="wordLoopRepeatCount" type="number" min="1" max="20" value="3" step="1"><small>次</small></span></label>
                 <label class="field"><span class="field-label">重复之间间隔</span><span class="number-input"><input id="wordLoopRepeatGap" type="number" min="0" max="10000" value="800" step="100"><small>毫秒</small></span></label>
                 <label class="field"><span class="field-label">下一个内容前间隔</span><span class="number-input"><input id="wordLoopNextGap" type="number" min="0" max="10000" value="1500" step="100"><small>毫秒</small></span></label>
-                <label class="field"><span class="field-label">朗读速度</span><span class="number-input"><input id="wordLoopRate" type="number" min="-100" max="100" value="0" step="5"><small>%</small></span></label>
               </div>
               <div class="word-loop-generate-actions">
                 <button class="button button-danger" id="wordLoopStopButton" type="button" hidden><i data-lucide="square"></i><span>停止生成</span></button>

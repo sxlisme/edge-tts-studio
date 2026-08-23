@@ -1012,7 +1012,7 @@ function showAppView(view) {
   elements.projectSummaryLabel.textContent = showCatalog ? "音色目录" : showInspection ? "音频工具" : showWordLoop ? "学习工具" : "当前项目";
   elements.projectSummaryTitle.textContent = showCatalog
     ? catalogVoices.length ? `${catalogVoices.length} 个在线音色` : "全部在线音色"
-    : showInspection ? "检测、剪辑与拼接" : showWordLoop ? "单词循环朗读" : "默认语音项目";
+    : showInspection ? "检测、剪辑与拼接" : showWordLoop ? "单词配音" : "默认语音项目";
   closeSidebar();
   window.scrollTo({ top: 0, behavior: document.body.classList.contains("reduce-motion") ? "auto" : "smooth" });
 }
@@ -2017,6 +2017,21 @@ function closeSidebar() {
   document.querySelector("#menuButton").setAttribute("aria-expanded", "false");
 }
 
+function closeSidebarFromButton() {
+  closeSidebar();
+  if (window.innerWidth > 1240) document.body.classList.add("sidebar-collapsed");
+  document.querySelector("#menuButton").focus();
+}
+
+function openSidebar() {
+  document.body.classList.remove("sidebar-collapsed");
+  const isOverlaySidebar = window.innerWidth <= 1240;
+  document.body.classList.toggle("sidebar-open", isOverlaySidebar);
+  document.querySelector("#sidebarBackdrop").hidden = !isOverlaySidebar;
+  document.querySelector("#menuButton").setAttribute("aria-expanded", "true");
+  document.querySelector("#sidebarCloseButton").focus();
+}
+
 function updateRangeOutputs() {
   for (const [inputId, outputId, displaySuffix] of [
     ["rateInput", "rateOutput", "%"],
@@ -2245,13 +2260,8 @@ elements.playerVolume.addEventListener("input", () => {
 
 document.querySelector("#inputTab").addEventListener("click", () => activateMobilePanel("inputPanel"));
 document.querySelector("#settingsTab").addEventListener("click", () => activateMobilePanel("settingsPanel"));
-document.querySelector("#menuButton").addEventListener("click", () => {
-  document.body.classList.add("sidebar-open");
-  document.querySelector("#sidebarBackdrop").hidden = false;
-  document.querySelector("#menuButton").setAttribute("aria-expanded", "true");
-  document.querySelector("#sidebarCloseButton").focus();
-});
-document.querySelector("#sidebarCloseButton").addEventListener("click", closeSidebar);
+document.querySelector("#menuButton").addEventListener("click", openSidebar);
+document.querySelector("#sidebarCloseButton").addEventListener("click", closeSidebarFromButton);
 document.querySelector("#sidebarBackdrop").addEventListener("click", closeSidebar);
 for (const navigationButton of document.querySelectorAll("[data-scroll-target]")) {
   navigationButton.addEventListener("click", () => {

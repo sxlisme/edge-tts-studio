@@ -21,6 +21,34 @@ function signedPercent(value) {
   return `${value >= 0 ? "+" : ""}${value}%`;
 }
 
+function signedPitch(value) {
+  return `${value >= 0 ? "+" : ""}${value}Hz`;
+}
+
+function hashVoiceName(value) {
+  let hash = 2166136261;
+  for (const character of value) {
+    hash ^= character.codePointAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function avatarIndexForVoice(voice) {
+  const gender = String(voice?.gender || "").toLocaleLowerCase("en-US");
+  const indexes = gender === "female" ? [0, 2, 4, 6, 8] : gender === "male" ? [1, 3, 5, 7] : [0, 1, 2, 3, 4, 5, 6, 7, 8];
+  return indexes[hashVoiceName(voice?.shortName || "voice") % indexes.length];
+}
+
+function applyVoiceAvatar(element, voice) {
+  const index = avatarIndexForVoice(voice);
+  element.classList.add("voice-avatar-image");
+  element.style.setProperty("--voice-avatar-x", `${(index % 3) * 50}%`);
+  element.style.setProperty("--voice-avatar-y", `${Math.floor(index / 3) * 50}%`);
+  element.textContent = "";
+  element.setAttribute("aria-hidden", "true");
+}
+
 function bytesFromBase64(value) {
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);
@@ -48,7 +76,7 @@ function exportName(format) {
     String(date.getHours()).padStart(2, "0"),
     String(date.getMinutes()).padStart(2, "0"),
   ].join("");
-  return `单词循环-${stamp}.${format}`;
+  return `单词配音-${stamp}.${format}`;
 }
 
 export function initializeWordLoop(refreshIcons) {
@@ -58,16 +86,23 @@ export function initializeWordLoop(refreshIcons) {
     inputHint: document.querySelector("#wordLoopInputHint"),
     clearButton: document.querySelector("#wordLoopClearButton"),
     importButton: document.querySelector("#wordLoopImportButton"),
+    exportMenu: document.querySelector("#wordLoopExportMenu"),
+    exportPopover: document.querySelector("#wordLoopExportPopover"),
     exportButton: document.querySelector("#wordLoopExportButton"),
-    exportFormat: document.querySelector("#wordLoopExportFormat"),
-    voicePicker: document.querySelector("#wordLoopVoicePicker"),
-    voiceSearch: document.querySelector("#wordLoopVoiceSearch"),
-    voiceResults: document.querySelector("#wordLoopVoiceResults"),
-    selectedVoice: document.querySelector("#wordLoopSelectedVoice"),
+    exportOptions: [...document.querySelectorAll("[data-word-loop-export-format]")],
+    voicePresets: document.querySelector("#wordLoopVoicePresets"),
+    localeSelect: document.querySelector("#wordLoopLocaleSelect"),
+    voiceSelect: document.querySelector("#wordLoopVoiceSelect"),
+    selectVoiceAvatar: document.querySelector("#wordLoopSelectVoiceAvatar"),
     repeatCount: document.querySelector("#wordLoopRepeatCount"),
     repeatGap: document.querySelector("#wordLoopRepeatGap"),
     nextGap: document.querySelector("#wordLoopNextGap"),
     rate: document.querySelector("#wordLoopRate"),
+    rateOutput: document.querySelector("#wordLoopRateOutput"),
+    pitch: document.querySelector("#wordLoopPitch"),
+    pitchOutput: document.querySelector("#wordLoopPitchOutput"),
+    volume: document.querySelector("#wordLoopVolume"),
+    volumeOutput: document.querySelector("#wordLoopVolumeOutput"),
     generateButton: document.querySelector("#wordLoopGenerateButton"),
     stopButton: document.querySelector("#wordLoopStopButton"),
     progressBar: document.querySelector("#wordLoopProgressBar"),
@@ -91,6 +126,7 @@ export function initializeWordLoop(refreshIcons) {
 
   let voices = [];
   let selectedVoiceName = "";
+  let selectedLanguage = "";
   let loadingVoices = false;
   let running = false;
   let cancelled = false;
@@ -103,6 +139,11 @@ export function initializeWordLoop(refreshIcons) {
   let wavBytes = null;
   let mp3Bytes = null;
   let resultUrl = "";
+  let exportMenuOpen = false;
+  let exporting = false;
+  let activeSelectControl = null;
+  let localeControl = null;
+  let voiceControl = null;
   const audioCache = new Map();
 
   function parseLines() {
@@ -126,6 +167,29 @@ export function initializeWordLoop(refreshIcons) {
     elements.error.hidden = !message;
   }
 
+  function closeExportMenu() {
+    exportMenuOpen = false;
+    elements.exportPopover.hidden = true;
+    elements.exportMenu.classList.remove("is-open");
+    elements.exportButton.setAttribute("aria-expanded", "false");
+  }
+
+  function openExportMenu() {
+    if (elements.exportButton.disabled || exporting) return;
+    activeSelectControl?.close();
+    exportMenuOpen = true;
+    elements.exportPopover.hidden = false;
+    elements.exportMenu.classList.add("is-open");
+    elements.exportButton.setAttribute("aria-expanded", "true");
+    requestAnimationFrame(() => elements.exportOptions[0]?.focus());
+  }
+
+  function setExportDisabled(disabled) {
+    elements.exportButton.disabled = disabled;
+    for (const option of elements.exportOptions) option.disabled = disabled;
+    if (disabled) closeExportMenu();
+  }
+
   function revokeResult() {
     elements.audio.pause();
     elements.audio.removeAttribute("src");
@@ -139,98 +203,304 @@ export function initializeWordLoop(refreshIcons) {
     wavBytes = null;
     mp3Bytes = null;
     elements.result.hidden = true;
-    elements.exportButton.disabled = true;
+    setExportDisabled(true);
   }
 
   function updateInputState() {
     const validation = inputValidation();
+    const availableVoiceCount = selectedLanguage ? filteredVoices().length : voices.length;
     elements.lineCount.textContent = validation.lines.length.toLocaleString("zh-CN");
     elements.inputHint.textContent = validation.message || "空行会自动忽略，每行最多 100 字，最多 10,000 行";
     elements.inputHint.classList.toggle("has-error", Boolean(validation.message));
     elements.generateButton.disabled = running || loadingVoices || !selectedVoiceName || Boolean(validation.message);
     elements.importButton.disabled = running;
     elements.clearButton.disabled = running;
+    localeControl?.setDisabled(running || loadingVoices || !voices.length);
+    voiceControl?.setDisabled(running || loadingVoices || !availableVoiceCount);
+    for (const input of [elements.repeatCount, elements.repeatGap, elements.nextGap, elements.rate, elements.pitch, elements.volume]) {
+      input.disabled = running;
+    }
   }
 
-  function voiceSearchContent(voice) {
-    return `${voice.displayName} ${voice.friendlyName} ${voice.shortName} ${voice.locale} ${voice.localeName} ${voice.genderName}`.toLocaleLowerCase("zh-CN");
+  function createUiSelect(root, onChange) {
+    const trigger = root.querySelector(".ui-select-trigger");
+    const valueElement = root.querySelector(".ui-select-value");
+    const popover = root.querySelector(".ui-select-popover");
+    const optionsElement = root.querySelector(".ui-select-options");
+    const searchInput = root.querySelector("input[type='search']");
+    let options = [];
+    let selectedValue = null;
+    let disabled = trigger.disabled;
+
+    function updateTrigger(fallbackLabel = "请选择", fallbackDescription = "") {
+      const option = options.find((item) => item.value === selectedValue);
+      const label = document.createElement("strong");
+      const description = document.createElement("small");
+      label.textContent = option?.label || fallbackLabel;
+      description.textContent = option?.description || fallbackDescription;
+      valueElement.replaceChildren(label, description);
+    }
+
+    function renderOptions(filter = "") {
+      const query = filter.trim().toLocaleLowerCase("zh-CN");
+      const visibleOptions = options.filter((option) => {
+        const content = `${option.label} ${option.description || ""} ${option.code || ""} ${option.keywords || ""} ${option.value}`;
+        return !query || content.toLocaleLowerCase("zh-CN").includes(query);
+      });
+      optionsElement.replaceChildren();
+      if (!visibleOptions.length) {
+        const empty = document.createElement("div");
+        empty.className = "ui-select-empty";
+        empty.textContent = "没有匹配的选项";
+        optionsElement.append(empty);
+        return;
+      }
+      for (const option of visibleOptions) {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = "ui-select-option";
+        item.setAttribute("role", "option");
+        const isSelected = option.value === selectedValue;
+        item.classList.toggle("is-selected", isSelected);
+        item.setAttribute("aria-selected", String(isSelected));
+        const copy = document.createElement("span");
+        copy.className = "ui-select-option-copy";
+        const label = document.createElement("strong");
+        label.textContent = option.label;
+        const description = document.createElement("small");
+        description.textContent = option.description || "";
+        copy.append(label, description);
+        if (option.code) {
+          const code = document.createElement("code");
+          code.textContent = option.code;
+          copy.append(code);
+        }
+        const check = document.createElement("i");
+        check.dataset.lucide = "check";
+        if (Number.isInteger(option.avatarIndex)) {
+          const avatar = document.createElement("span");
+          avatar.className = "ui-select-option-avatar voice-avatar-image";
+          avatar.style.setProperty("--voice-avatar-x", `${(option.avatarIndex % 3) * 50}%`);
+          avatar.style.setProperty("--voice-avatar-y", `${Math.floor(option.avatarIndex / 3) * 50}%`);
+          avatar.setAttribute("aria-hidden", "true");
+          item.classList.add("has-avatar");
+          item.append(avatar, copy, check);
+        } else {
+          item.append(copy, check);
+        }
+        item.addEventListener("click", () => selectValue(option.value, true));
+        optionsElement.append(item);
+      }
+      refreshIcons();
+    }
+
+    function openSelect() {
+      if (disabled) return;
+      if (activeSelectControl && activeSelectControl !== control) activeSelectControl.close();
+      activeSelectControl = control;
+      popover.hidden = false;
+      root.classList.add("is-open");
+      trigger.setAttribute("aria-expanded", "true");
+      document.body.classList.add("select-open");
+      renderOptions(searchInput?.value || "");
+      requestAnimationFrame(() => (searchInput || optionsElement.querySelector(".is-selected") || optionsElement.querySelector("button"))?.focus());
+    }
+
+    function close() {
+      popover.hidden = true;
+      root.classList.remove("is-open");
+      trigger.setAttribute("aria-expanded", "false");
+      if (activeSelectControl === control) activeSelectControl = null;
+      document.body.classList.toggle("select-open", Boolean(activeSelectControl));
+      if (searchInput) {
+        searchInput.value = "";
+        renderOptions();
+      }
+    }
+
+    function selectValue(nextValue, notify = false) {
+      if (!options.some((option) => option.value === nextValue)) return false;
+      selectedValue = nextValue;
+      updateTrigger();
+      renderOptions(searchInput?.value || "");
+      close();
+      if (notify) onChange?.(selectedValue);
+      return true;
+    }
+
+    const control = {
+      close,
+      get value() { return selectedValue ?? ""; },
+      setOptions(nextOptions) {
+        options = nextOptions;
+        if (!options.some((option) => option.value === selectedValue)) selectedValue = null;
+        updateTrigger();
+        renderOptions();
+      },
+      setValue: selectValue,
+      setDisabled(nextDisabled) {
+        disabled = nextDisabled;
+        trigger.disabled = nextDisabled;
+        root.classList.toggle("is-disabled", nextDisabled);
+        if (nextDisabled) close();
+      },
+      setLoading(label, description) {
+        options = [];
+        selectedValue = null;
+        disabled = true;
+        trigger.disabled = true;
+        root.classList.add("is-disabled");
+        updateTrigger(label, description);
+        renderOptions();
+        close();
+      },
+      setError(label, description) {
+        this.setLoading(label, description);
+      },
+    };
+    trigger.addEventListener("click", () => popover.hidden ? openSelect() : close());
+    trigger.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        openSelect();
+      }
+    });
+    searchInput?.addEventListener("input", () => renderOptions(searchInput.value));
+    popover.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+        trigger.focus();
+      }
+    });
+    return control;
   }
 
-  function closeVoiceResults() {
-    elements.voiceResults.hidden = true;
-    elements.voicePicker.classList.remove("is-open");
+  function filteredVoices() {
+    if (!selectedLanguage) return voices;
+    return voices.filter((voice) => voice.locale.toLocaleLowerCase("en-US").startsWith(`${selectedLanguage}-`));
   }
 
-  function renderSelectedVoice() {
+  function languageOptions() {
+    const counts = new Map();
+    for (const voice of voices) {
+      const language = voice.locale.split("-")[0].toLocaleLowerCase("en-US");
+      counts.set(language, (counts.get(language) || 0) + 1);
+    }
+    const preferredLabels = new Map([
+      ["zh", "中文"], ["en", "英文"], ["ja", "日文"], ["ko", "韩文"],
+    ]);
+    let displayNames = null;
+    try {
+      displayNames = new Intl.DisplayNames(["zh-CN"], { type: "language" });
+    } catch (_) {
+      displayNames = null;
+    }
+    const priority = ["zh", "en", "ja", "ko"];
+    const languages = [...counts.keys()].sort((left, right) => {
+      const leftPriority = priority.indexOf(left);
+      const rightPriority = priority.indexOf(right);
+      if (leftPriority >= 0 || rightPriority >= 0) return (leftPriority < 0 ? 99 : leftPriority) - (rightPriority < 0 ? 99 : rightPriority);
+      return (displayNames?.of(left) || left).localeCompare(displayNames?.of(right) || right, "zh-CN");
+    });
+    return [
+      { value: "", label: "全部语言", description: `${voices.length} 个音色`, keywords: "所有 全部" },
+      ...languages.map((language) => ({
+        value: language,
+        label: preferredLabels.get(language) || displayNames?.of(language) || language.toUpperCase(),
+        description: `${counts.get(language)} 个音色`,
+        keywords: language,
+      })),
+    ];
+  }
+
+  function updateVoiceSelection() {
     const voice = voices.find((item) => item.shortName === selectedVoiceName);
-    const avatar = document.createElement("span");
-    avatar.className = "voice-prefix";
-    avatar.textContent = voice?.gender === "Female" ? "女" : voice?.gender === "Male" ? "男" : "声";
-    const copy = document.createElement("div");
-    const name = document.createElement("strong");
-    const detail = document.createElement("small");
-    name.textContent = voice?.displayName || (loadingVoices ? "正在载入音色" : "请选择朗读音色");
-    detail.textContent = voice ? `${voice.genderName} · ${voice.localeName} · ${voice.shortName}` : loadingVoices ? "请稍候" : "在上方搜索并选择";
-    copy.append(name, detail);
-    elements.selectedVoice.replaceChildren(avatar, copy);
+    if (!voice) return;
+    applyVoiceAvatar(elements.selectVoiceAvatar, voice);
+    for (const preset of elements.voicePresets.querySelectorAll(".voice-preset")) {
+      preset.classList.toggle("is-selected", preset.dataset.voice === voice.shortName);
+    }
+  }
+
+  function renderVoicePresets(availableVoices) {
+    const fragment = document.createDocumentFragment();
+    for (const voice of availableVoices.slice(0, 4)) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "voice-preset";
+      button.dataset.voice = voice.shortName;
+      button.title = `${voice.displayName} · ${voice.genderName} · ${voice.localeName}`;
+      const avatar = document.createElement("span");
+      avatar.className = "preset-avatar";
+      applyVoiceAvatar(avatar, voice);
+      const name = document.createElement("strong");
+      name.textContent = voice.displayName;
+      const detail = document.createElement("small");
+      detail.textContent = voice.genderName;
+      button.append(avatar, name, detail);
+      button.addEventListener("click", () => voiceControl.setValue(voice.shortName, true));
+      fragment.append(button);
+    }
+    elements.voicePresets.replaceChildren(fragment);
+    updateVoiceSelection();
   }
 
   function selectVoice(shortName) {
+    if (selectedVoiceName !== shortName) revokeResult();
     selectedVoiceName = shortName;
-    elements.voiceSearch.value = "";
-    renderSelectedVoice();
-    closeVoiceResults();
+    updateVoiceSelection();
     updateInputState();
   }
 
-  function renderVoiceResults() {
-    const query = elements.voiceSearch.value.trim().toLocaleLowerCase("zh-CN");
-    const matches = voices.filter((voice) => !query || voiceSearchContent(voice).includes(query));
-    elements.voiceResults.replaceChildren();
-    if (!matches.length) {
-      const empty = document.createElement("div");
-      empty.className = "word-loop-voice-empty";
-      empty.textContent = loadingVoices ? "正在载入音色" : "没有匹配的音色";
-      elements.voiceResults.append(empty);
-    }
-    for (const voice of matches) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "word-loop-voice-option";
-      button.classList.toggle("is-selected", voice.shortName === selectedVoiceName);
-      button.setAttribute("role", "option");
-      button.setAttribute("aria-selected", String(voice.shortName === selectedVoiceName));
-      const copy = document.createElement("span");
-      const name = document.createElement("strong");
-      const detail = document.createElement("small");
-      name.textContent = voice.displayName;
-      detail.textContent = `${voice.genderName} · ${voice.localeName} · ${voice.shortName}`;
-      copy.append(name, detail);
-      const check = document.createElement("i");
-      check.dataset.lucide = "check";
-      button.append(copy, check);
-      button.addEventListener("click", () => selectVoice(voice.shortName));
-      elements.voiceResults.append(button);
-    }
-    elements.voiceResults.hidden = false;
-    elements.voicePicker.classList.add("is-open");
-    refreshIcons();
+  function updateFilteredVoices() {
+    const availableVoices = filteredVoices();
+    const previousVoiceName = selectedVoiceName;
+    renderVoicePresets(availableVoices);
+    voiceControl.setOptions(availableVoices.map((voice) => ({
+      value: voice.shortName,
+      label: voice.displayName,
+      description: `${voice.genderName} · ${voice.localeName}`,
+      code: voice.shortName,
+      avatarIndex: avatarIndexForVoice(voice),
+      keywords: `${voice.friendlyName || ""} ${voice.locale}`,
+    })));
+    const selectedIsAvailable = availableVoices.some((voice) => voice.shortName === selectedVoiceName);
+    const preferred = selectedIsAvailable
+      ? selectedVoiceName
+      : availableVoices.find((voice) => voice.shortName === DEFAULT_VOICE)?.shortName || availableVoices[0]?.shortName;
+    selectedVoiceName = preferred || "";
+    if (selectedVoiceName !== previousVoiceName) revokeResult();
+    if (preferred) voiceControl.setValue(preferred);
+    voiceControl.setDisabled(!availableVoices.length);
+    updateVoiceSelection();
+    updateInputState();
+  }
+
+  function selectLanguage(language) {
+    selectedLanguage = language;
+    updateFilteredVoices();
   }
 
   async function loadVoices() {
     if (voices.length || loadingVoices) return;
     loadingVoices = true;
-    renderSelectedVoice();
+    localeControl.setLoading("正在载入语言", "请稍候");
+    voiceControl.setLoading("正在载入音色", "请稍候");
     updateInputState();
     try {
       const payload = await invoke("list_voices", { locale: null });
       voices = payload.voices;
-      const preferred = voices.find((voice) => voice.shortName === DEFAULT_VOICE) || voices[0];
-      if (preferred) selectVoice(preferred.shortName);
-      else setError("没有找到可用音色，请检查网络后重试");
+      localeControl.setOptions(languageOptions());
+      localeControl.setValue("");
+      localeControl.setDisabled(!voices.length);
+      selectedLanguage = "";
+      updateFilteredVoices();
+      if (!voices.length) setError("没有找到可用音色，请检查网络后重试");
     } catch (error) {
+      localeControl.setError("语言载入失败", "请检查网络后重试");
+      voiceControl.setError("音色载入失败", "请检查网络后重试");
       setError(`音色载入失败：${error?.message || error}`);
-      renderSelectedVoice();
     } finally {
       loadingVoices = false;
       updateInputState();
@@ -355,10 +625,15 @@ export function initializeWordLoop(refreshIcons) {
     const repeatGapSeconds = clampNumber(elements.repeatGap, 0, 10000) / 1000;
     const nextGapSeconds = clampNumber(elements.nextGap, 0, 10000) / 1000;
     const rate = clampNumber(elements.rate, -100, 100);
+    const pitch = clampNumber(elements.pitch, -100, 100);
+    const volume = clampNumber(elements.volume, -100, 100);
+    const voiceName = selectedVoiceName;
     elements.repeatCount.value = repeatCount;
     elements.repeatGap.value = Math.round(repeatGapSeconds * 1000);
     elements.nextGap.value = Math.round(nextGapSeconds * 1000);
     elements.rate.value = rate;
+    elements.pitch.value = pitch;
+    elements.volume.value = volume;
 
     running = true;
     cancelled = false;
@@ -383,7 +658,12 @@ export function initializeWordLoop(refreshIcons) {
     updateInputState();
 
     const uniqueTexts = [...new Set(validation.lines)];
-    const options = { voice: selectedVoiceName, rate: signedPercent(rate), volume: "+0%", pitch: "+0Hz" };
+    const options = {
+      voice: voiceName,
+      rate: signedPercent(rate),
+      pitch: signedPitch(pitch),
+      volume: signedPercent(volume),
+    };
     const results = new Map();
     let workIndex = 0;
     const worker = async () => {
@@ -392,7 +672,7 @@ export function initializeWordLoop(refreshIcons) {
         workIndex += 1;
         if (index >= uniqueTexts.length) return;
         const text = uniqueTexts[index];
-        const cacheKey = `${selectedVoiceName}\u0000${rate}\u0000${text}`;
+        const cacheKey = `${voiceName}\u0000${rate}\u0000${pitch}\u0000${volume}\u0000${text}`;
         try {
           const bytes = await synthesizeWithRetries(text, options, cacheKey);
           if (cancelled) return;
@@ -460,7 +740,7 @@ export function initializeWordLoop(refreshIcons) {
       elements.resultMeta.textContent = `${validation.lines.length} 项 · 每项 ${repeatCount} 次 · ${formatDuration(totalSeconds)}`;
       elements.result.hidden = false;
       elements.durationTime.textContent = formatDuration(totalSeconds);
-      elements.exportButton.disabled = false;
+      setExportDisabled(false);
       elements.progressText.textContent = `合成完成 ${validation.lines.length} / ${validation.lines.length}`;
       elements.audio.play().catch(() => {});
     } catch (error) {
@@ -499,11 +779,13 @@ export function initializeWordLoop(refreshIcons) {
     }
   }
 
-  async function exportAudio() {
-    if (!wavBytes) return;
-    const format = elements.exportFormat.value === "wav" ? "wav" : "mp3";
-    elements.exportButton.disabled = true;
-    elements.exportFormat.disabled = true;
+  async function exportAudio(requestedFormat) {
+    if (!wavBytes || exporting) return;
+    const format = requestedFormat === "wav" ? "wav" : "mp3";
+    exporting = true;
+    closeExportMenu();
+    setExportDisabled(true);
+    elements.exportButton.querySelector("span").textContent = `正在导出 ${format.toUpperCase()}`;
     try {
       const destination = await save({
         defaultPath: exportName(format),
@@ -526,9 +808,22 @@ export function initializeWordLoop(refreshIcons) {
     } catch (error) {
       setError(`导出失败：${error?.message || error}`);
     } finally {
-      elements.exportButton.disabled = !wavBytes;
-      elements.exportFormat.disabled = false;
+      exporting = false;
+      elements.exportButton.querySelector("span").textContent = "导出音频";
+      setExportDisabled(!wavBytes);
     }
+  }
+
+  localeControl = createUiSelect(elements.localeSelect, selectLanguage);
+  voiceControl = createUiSelect(elements.voiceSelect, selectVoice);
+
+  function updateRangeOutputs() {
+    const rate = Number(elements.rate.value);
+    const pitch = Number(elements.pitch.value);
+    const volume = Number(elements.volume.value);
+    elements.rateOutput.textContent = `${rate > 0 ? "+" : ""}${rate}%`;
+    elements.pitchOutput.textContent = `${pitch > 0 ? "+" : ""}${pitch} Hz`;
+    elements.volumeOutput.textContent = `${volume > 0 ? "+" : ""}${volume}%`;
   }
 
   elements.input.addEventListener("input", () => {
@@ -542,32 +837,41 @@ export function initializeWordLoop(refreshIcons) {
     elements.input.focus();
   });
   elements.importButton.addEventListener("click", importText);
-  elements.exportButton.addEventListener("click", exportAudio);
-  elements.exportFormat.addEventListener("change", () => {
-    elements.exportButton.querySelector("span").textContent = `导出 ${elements.exportFormat.value.toUpperCase()}`;
-  });
+  elements.exportButton.addEventListener("click", () => exportMenuOpen ? closeExportMenu() : openExportMenu());
+  for (const option of elements.exportOptions) {
+    option.addEventListener("click", () => exportAudio(option.dataset.wordLoopExportFormat));
+  }
   elements.generateButton.addEventListener("click", generate);
   elements.stopButton.addEventListener("click", () => {
     cancelled = true;
     elements.stopButton.disabled = true;
     elements.progressText.textContent = "正在停止当前任务";
   });
-  elements.voiceSearch.addEventListener("focus", () => {
-    elements.voiceSearch.value = "";
-    renderVoiceResults();
-  });
-  elements.voiceSearch.addEventListener("input", renderVoiceResults);
-  for (const input of [elements.repeatCount, elements.repeatGap, elements.nextGap, elements.rate]) {
+  for (const input of [elements.repeatCount, elements.repeatGap, elements.nextGap]) {
     input.addEventListener("change", () => {
       revokeResult();
       updateInputState();
     });
   }
+  for (const input of [elements.rate, elements.pitch, elements.volume]) {
+    input.addEventListener("input", () => {
+      updateRangeOutputs();
+      revokeResult();
+      updateInputState();
+    });
+  }
   document.addEventListener("pointerdown", (event) => {
-    if (!elements.voicePicker.contains(event.target)) closeVoiceResults();
+    if (exportMenuOpen && !elements.exportMenu.contains(event.target)) closeExportMenu();
+    if (activeSelectControl && !elements.localeSelect.contains(event.target) && !elements.voiceSelect.contains(event.target)) {
+      activeSelectControl.close();
+    }
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") closeVoiceResults();
+    if (event.key === "Escape" && exportMenuOpen) {
+      closeExportMenu();
+      elements.exportButton.focus();
+    }
+    if (event.key === "Escape" && activeSelectControl) activeSelectControl.close();
   });
   window.addEventListener("beforeunload", revokeResult);
   elements.playerToggle.addEventListener("click", () => {
@@ -598,13 +902,14 @@ export function initializeWordLoop(refreshIcons) {
   });
 
   updateInputState();
-  renderSelectedVoice();
+  updateRangeOutputs();
 
   return {
     prepare: loadVoices,
     pause() {
       elements.audio.pause();
-      closeVoiceResults();
+      activeSelectControl?.close();
+      closeExportMenu();
     },
   };
 }
