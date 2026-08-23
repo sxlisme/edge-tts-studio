@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { inspectAudioBuffer, renderClipsToWav, renderTimelineToWav } from "../static/audio-utils.js";
+import { encodeWavToMp3 } from "../static/audio-export.js";
 
 function audioBuffer(channels, sampleRate) {
   return {
@@ -68,4 +69,15 @@ test("renders exact silence between timeline audio items", () => {
   assert.equal(view.getInt16(48, true), 0);
   assert.equal(view.getInt16(50, true), 0);
   assert.equal(view.getInt16(52, true), 16384);
+});
+
+test("encodes rendered PCM WAV as MP3 audio", async () => {
+  const sampleRate = 8000;
+  const samples = Float32Array.from({ length: sampleRate }, (_, index) => Math.sin(index / 8) * 0.25);
+  const wav = renderTimelineToWav([{ buffer: audioBuffer([samples], sampleRate) }], sampleRate);
+  const mp3 = await encodeWavToMp3(wav, { bitrate: 64 });
+
+  assert.ok(mp3.length > 1000);
+  assert.equal(mp3[0], 0xff);
+  assert.ok((mp3[1] & 0xe0) === 0xe0);
 });

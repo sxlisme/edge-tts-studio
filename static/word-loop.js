@@ -1,10 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { writeFile } from "@tauri-apps/plugin-fs";
+import { encodeWavToMp3 } from "./audio-export.js";
 import { renderTimelineToWav } from "./audio-utils.js";
 
-const MAX_LINES = 500;
+const MAX_LINES = 10_000;
 const MAX_LINE_CHARACTERS = 100;
+const MAX_VISIBLE_TASKS = 300;
+const MAX_VISIBLE_FAILURES = 300;
 const CONCURRENCY = 3;
 const RETRIES = 3;
 const DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural";
@@ -26,7 +29,7 @@ function bytesFromBase64(value) {
 }
 
 function formatDuration(seconds) {
-  const safeSeconds = Math.max(0, Math.round(seconds));
+  const safeSeconds = Math.max(0, Math.round(Number.isFinite(seconds) ? seconds : 0));
   const hours = Math.floor(safeSeconds / 3600);
   const minutes = Math.floor((safeSeconds % 3600) / 60);
   const remainder = safeSeconds % 60;
@@ -35,7 +38,7 @@ function formatDuration(seconds) {
     : `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
 }
 
-function exportName() {
+function exportName(format) {
   const date = new Date();
   const stamp = [
     date.getFullYear(),
@@ -45,7 +48,7 @@ function exportName() {
     String(date.getHours()).padStart(2, "0"),
     String(date.getMinutes()).padStart(2, "0"),
   ].join("");
-  return `单词循环-${stamp}.wav`;
+  return `单词循环-${stamp}.${format}`;
 }
 
 export function initializeWordLoop(refreshIcons) {
@@ -56,6 +59,7 @@ export function initializeWordLoop(refreshIcons) {
     clearButton: document.querySelector("#wordLoopClearButton"),
     importButton: document.querySelector("#wordLoopImportButton"),
     exportButton: document.querySelector("#wordLoopExportButton"),
+    exportFormat: document.querySelector("#wordLoopExportFormat"),
     voicePicker: document.querySelector("#wordLoopVoicePicker"),
     voiceSearch: document.querySelector("#wordLoopVoiceSearch"),
     voiceResults: document.querySelector("#wordLoopVoiceResults"),
@@ -75,6 +79,11 @@ export function initializeWordLoop(refreshIcons) {
     duration: document.querySelector("#wordLoopDuration"),
     result: document.querySelector("#wordLoopResult"),
     audio: document.querySelector("#wordLoopAudio"),
+    playerToggle: document.querySelector("#wordLoopPlayerToggle"),
+    currentTime: document.querySelector("#wordLoopCurrentTime"),
+    durationTime: document.querySelector("#wordLoopDurationTime"),
+    progressSlider: document.querySelector("#wordLoopProgressSlider"),
+    playerVolume: document.querySelector("#wordLoopPlayerVolume"),
     resultMeta: document.querySelector("#wordLoopResultMeta"),
     error: document.querySelector("#wordLoopError"),
     taskList: document.querySelector("#wordLoopTaskList"),
@@ -86,7 +95,13 @@ export function initializeWordLoop(refreshIcons) {
   let running = false;
   let cancelled = false;
   let tasks = [];
+  let taskIndexesByText = new Map();
+  let taskRows = new Map();
+  let taskListSummary = null;
+  let successCount = 0;
+  let failedCount = 0;
   let wavBytes = null;
+  let mp3Bytes = null;
   let resultUrl = "";
   const audioCache = new Map();
 
@@ -114,9 +129,15 @@ export function initializeWordLoop(refreshIcons) {
   function revokeResult() {
     elements.audio.pause();
     elements.audio.removeAttribute("src");
+    elements.result.classList.remove("is-playing");
+    elements.playerToggle.setAttribute("aria-label", "播放");
+    elements.progressSlider.value = 0;
+    elements.currentTime.textContent = "00:00";
+    elements.durationTime.textContent = "00:00";
     if (resultUrl) URL.revokeObjectURL(resultUrl);
     resultUrl = "";
     wavBytes = null;
+    mp3Bytes = null;
     elements.result.hidden = true;
     elements.exportButton.disabled = true;
   }
@@ -124,7 +145,7 @@ export function initializeWordLoop(refreshIcons) {
   function updateInputState() {
     const validation = inputValidation();
     elements.lineCount.textContent = validation.lines.length.toLocaleString("zh-CN");
-    elements.inputHint.textContent = validation.message || "空行会自动忽略，每行最多 100 字";
+    elements.inputHint.textContent = validation.message || "空行会自动忽略，每行最多 100 字，最多 10,000 行";
     elements.inputHint.classList.toggle("has-error", Boolean(validation.message));
     elements.generateButton.disabled = running || loadingVoices || !selectedVoiceName || Boolean(validation.message);
     elements.importButton.disabled = running;
@@ -156,8 +177,7 @@ export function initializeWordLoop(refreshIcons) {
 
   function selectVoice(shortName) {
     selectedVoiceName = shortName;
-    const voice = voices.find((item) => item.shortName === shortName);
-    elements.voiceSearch.value = voice?.displayName || "";
+    elements.voiceSearch.value = "";
     renderSelectedVoice();
     closeVoiceResults();
     updateInputState();
@@ -165,7 +185,7 @@ export function initializeWordLoop(refreshIcons) {
 
   function renderVoiceResults() {
     const query = elements.voiceSearch.value.trim().toLocaleLowerCase("zh-CN");
-    const matches = voices.filter((voice) => !query || voiceSearchContent(voice).includes(query)).slice(0, 100);
+    const matches = voices.filter((voice) => !query || voiceSearchContent(voice).includes(query));
     elements.voiceResults.replaceChildren();
     if (!matches.length) {
       const empty = document.createElement("div");
@@ -217,64 +237,89 @@ export function initializeWordLoop(refreshIcons) {
     }
   }
 
-  function taskCounts() {
+  function taskStatusLabel(status) {
     return {
-      success: tasks.filter((task) => task.status === "success").length,
-      failed: tasks.filter((task) => task.status === "error").length,
-    };
+      pending: "等待中",
+      running: "生成中",
+      retrying: "重试中",
+      success: "已完成",
+      error: "生成失败",
+      cancelled: "已停止",
+    }[status] || "等待中";
   }
 
-  function renderTasks() {
-    const fragment = document.createDocumentFragment();
-    tasks.forEach((task, index) => {
-      const row = document.createElement("li");
-      row.className = `word-loop-task-item is-${task.status}`;
-      const number = document.createElement("span");
-      number.className = "word-loop-task-number";
-      number.textContent = String(index + 1).padStart(3, "0");
-      const copy = document.createElement("span");
-      copy.className = "word-loop-task-copy";
-      const text = document.createElement("strong");
-      const detail = document.createElement("small");
-      text.textContent = task.text;
-      detail.textContent = task.detail || `播放 ${clampNumber(elements.repeatCount, 1, 20)} 次`;
-      copy.append(text, detail);
-      const status = document.createElement("span");
-      status.className = "word-loop-task-status";
-      status.textContent = {
-        pending: "等待中",
-        running: "生成中",
-        retrying: "重试中",
-        success: "已完成",
-        error: "生成失败",
-        cancelled: "已停止",
-      }[task.status] || "等待中";
-      row.append(number, copy, status);
-      fragment.append(row);
-    });
-    elements.taskList.replaceChildren(fragment);
+  function createTaskRow(task, index) {
+    const row = document.createElement("li");
+    const number = document.createElement("span");
+    number.className = "word-loop-task-number";
+    number.textContent = String(index + 1).padStart(4, "0");
+    const copy = document.createElement("span");
+    copy.className = "word-loop-task-copy";
+    const text = document.createElement("strong");
+    const detail = document.createElement("small");
+    text.textContent = task.text;
+    copy.append(text, detail);
+    const status = document.createElement("span");
+    status.className = "word-loop-task-status";
+    row.append(number, copy, status);
+    taskRows.set(index, { row, detail, status });
+    updateTaskRow(index);
+    return row;
+  }
 
-    const counts = taskCounts();
+  function updateTaskRow(index) {
+    const task = tasks[index];
+    const parts = taskRows.get(index);
+    if (!task || !parts) return;
+    parts.row.className = `word-loop-task-item is-${task.status}`;
+    parts.detail.textContent = task.detail || `播放 ${clampNumber(elements.repeatCount, 1, 20)} 次`;
+    parts.status.textContent = taskStatusLabel(task.status);
+  }
+
+  function renderTaskList() {
+    taskRows = new Map();
+    const fragment = document.createDocumentFragment();
+    const visibleCount = Math.min(tasks.length, MAX_VISIBLE_TASKS);
+    for (let index = 0; index < visibleCount; index += 1) fragment.append(createTaskRow(tasks[index], index));
+    taskListSummary = null;
+    if (tasks.length > visibleCount) {
+      taskListSummary = document.createElement("li");
+      taskListSummary.className = "word-loop-task-summary";
+      taskListSummary.textContent = `为保持界面流畅，列表展示前 ${MAX_VISIBLE_TASKS} 条；全部 ${tasks.length.toLocaleString("zh-CN")} 条仍会生成`;
+      fragment.append(taskListSummary);
+    }
+    elements.taskList.replaceChildren(fragment);
+  }
+
+  function renderProgress() {
     const total = tasks.length;
-    const percent = total ? counts.success / total * 100 : 0;
+    const percent = total ? successCount / total * 100 : 0;
     elements.totalCount.textContent = total.toLocaleString("zh-CN");
-    elements.successCount.textContent = counts.success.toLocaleString("zh-CN");
-    elements.failedCount.textContent = counts.failed.toLocaleString("zh-CN");
+    elements.successCount.textContent = successCount.toLocaleString("zh-CN");
+    elements.failedCount.textContent = failedCount.toLocaleString("zh-CN");
     elements.progressBar.max = Math.max(1, total);
-    elements.progressBar.value = counts.success;
+    elements.progressBar.value = successCount;
     elements.percent.textContent = `${percent.toFixed(2)}%`;
-    if (running) elements.progressText.textContent = `正在生成 ${counts.success} / ${total} · 并发 ${CONCURRENCY}`;
-    refreshIcons();
+    if (running) elements.progressText.textContent = `正在生成 ${successCount} / ${total} · 并发 ${CONCURRENCY}`;
   }
 
   function updateTasksForText(text, status, detail = "") {
-    for (const task of tasks) {
-      if (task.text === text) {
-        task.status = status;
-        task.detail = detail;
+    const indexes = taskIndexesByText.get(text) || [];
+    for (const index of indexes) {
+      const task = tasks[index];
+      if (task.status === "success") successCount -= 1;
+      if (task.status === "error") failedCount -= 1;
+      task.status = status;
+      task.detail = detail;
+      if (status === "success") successCount += 1;
+      if (status === "error") failedCount += 1;
+      if (status === "error" && !taskRows.has(index) && failedCount <= MAX_VISIBLE_FAILURES) {
+        elements.taskList.insertBefore(createTaskRow(task, index), taskListSummary);
+      } else {
+        updateTaskRow(index);
       }
     }
-    renderTasks();
+    renderProgress();
   }
 
   async function synthesizeWithRetries(text, options, cacheKey) {
@@ -325,7 +370,16 @@ export function initializeWordLoop(refreshIcons) {
     elements.stopButton.hidden = false;
     elements.stopButton.disabled = false;
     tasks = validation.lines.map((text) => ({ text, status: "pending", detail: "" }));
-    renderTasks();
+    taskIndexesByText = new Map();
+    tasks.forEach((task, index) => {
+      const indexes = taskIndexesByText.get(task.text) || [];
+      indexes.push(index);
+      taskIndexesByText.set(task.text, indexes);
+    });
+    successCount = 0;
+    failedCount = 0;
+    renderTaskList();
+    renderProgress();
     updateInputState();
 
     const uniqueTexts = [...new Set(validation.lines)];
@@ -354,15 +408,19 @@ export function initializeWordLoop(refreshIcons) {
     try {
       await Promise.all(Array.from({ length: Math.min(CONCURRENCY, uniqueTexts.length) }, worker));
       if (cancelled) {
-        for (const task of tasks) if (["pending", "running", "retrying"].includes(task.status)) task.status = "cancelled";
+        tasks.forEach((task, index) => {
+          if (["pending", "running", "retrying"].includes(task.status)) {
+            task.status = "cancelled";
+            updateTaskRow(index);
+          }
+        });
         elements.progressText.textContent = "任务已停止";
-        renderTasks();
+        renderProgress();
         return;
       }
-      const failedTasks = tasks.filter((task) => task.status === "error");
-      if (failedTasks.length) {
-        elements.progressText.textContent = `生成失败 ${failedTasks.length} 项，请检查失败详情后重试`;
-        setError(`有 ${failedTasks.length} 个内容重试 3 次后仍生成失败，未合成最终音频。再次点击生成可重新尝试。`);
+      if (failedCount) {
+        elements.progressText.textContent = `生成失败 ${failedCount} 项，请检查失败详情后重试`;
+        setError(`有 ${failedCount} 个内容重试 3 次后仍生成失败，未合成最终音频。再次点击生成可重新尝试。`);
         return;
       }
 
@@ -373,7 +431,15 @@ export function initializeWordLoop(refreshIcons) {
       const context = new AudioContextClass();
       const decoded = new Map();
       try {
-        await Promise.all(uniqueTexts.map(async (text) => decoded.set(text, await decodeAudio(results.get(text), context))));
+        let decodeIndex = 0;
+        const decodeWorker = async () => {
+          while (decodeIndex < uniqueTexts.length) {
+            const text = uniqueTexts[decodeIndex];
+            decodeIndex += 1;
+            decoded.set(text, await decodeAudio(results.get(text), context));
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, uniqueTexts.length) }, decodeWorker));
       } finally {
         await context.close();
       }
@@ -393,6 +459,7 @@ export function initializeWordLoop(refreshIcons) {
       elements.audio.src = resultUrl;
       elements.resultMeta.textContent = `${validation.lines.length} 项 · 每项 ${repeatCount} 次 · ${formatDuration(totalSeconds)}`;
       elements.result.hidden = false;
+      elements.durationTime.textContent = formatDuration(totalSeconds);
       elements.exportButton.disabled = false;
       elements.progressText.textContent = `合成完成 ${validation.lines.length} / ${validation.lines.length}`;
       elements.audio.play().catch(() => {});
@@ -434,16 +501,33 @@ export function initializeWordLoop(refreshIcons) {
 
   async function exportAudio() {
     if (!wavBytes) return;
+    const format = elements.exportFormat.value === "wav" ? "wav" : "mp3";
     elements.exportButton.disabled = true;
+    elements.exportFormat.disabled = true;
     try {
-      const destination = await save({ defaultPath: exportName(), filters: [{ name: "WAV 音频", extensions: ["wav"] }] });
+      const destination = await save({
+        defaultPath: exportName(format),
+        filters: [{ name: `${format.toUpperCase()} 音频`, extensions: [format] }],
+      });
       if (!destination) return;
-      await writeFile(destination, wavBytes);
+      let outputBytes = format === "mp3" ? mp3Bytes : wavBytes;
+      if (format === "mp3" && !outputBytes) {
+        elements.progressText.textContent = "正在编码 MP3 0%";
+        outputBytes = await encodeWavToMp3(wavBytes, {
+          onProgress(progress) {
+            elements.progressText.textContent = `正在编码 MP3 ${(progress * 100).toFixed(0)}%`;
+          },
+        });
+        mp3Bytes = outputBytes;
+      }
+      await writeFile(destination, outputBytes);
       elements.resultMeta.textContent = `已导出：${destination}`;
+      elements.progressText.textContent = `已导出 ${format.toUpperCase()} 音频`;
     } catch (error) {
       setError(`导出失败：${error?.message || error}`);
     } finally {
       elements.exportButton.disabled = !wavBytes;
+      elements.exportFormat.disabled = false;
     }
   }
 
@@ -459,13 +543,19 @@ export function initializeWordLoop(refreshIcons) {
   });
   elements.importButton.addEventListener("click", importText);
   elements.exportButton.addEventListener("click", exportAudio);
+  elements.exportFormat.addEventListener("change", () => {
+    elements.exportButton.querySelector("span").textContent = `导出 ${elements.exportFormat.value.toUpperCase()}`;
+  });
   elements.generateButton.addEventListener("click", generate);
   elements.stopButton.addEventListener("click", () => {
     cancelled = true;
     elements.stopButton.disabled = true;
     elements.progressText.textContent = "正在停止当前任务";
   });
-  elements.voiceSearch.addEventListener("focus", renderVoiceResults);
+  elements.voiceSearch.addEventListener("focus", () => {
+    elements.voiceSearch.value = "";
+    renderVoiceResults();
+  });
   elements.voiceSearch.addEventListener("input", renderVoiceResults);
   for (const input of [elements.repeatCount, elements.repeatGap, elements.nextGap, elements.rate]) {
     input.addEventListener("change", () => {
@@ -480,6 +570,32 @@ export function initializeWordLoop(refreshIcons) {
     if (event.key === "Escape") closeVoiceResults();
   });
   window.addEventListener("beforeunload", revokeResult);
+  elements.playerToggle.addEventListener("click", () => {
+    if (!elements.audio.getAttribute("src")) return;
+    if (elements.audio.paused) elements.audio.play().catch(() => {});
+    else elements.audio.pause();
+  });
+  elements.audio.addEventListener("play", () => {
+    elements.result.classList.add("is-playing");
+    elements.playerToggle.setAttribute("aria-label", "暂停");
+  });
+  elements.audio.addEventListener("pause", () => {
+    elements.result.classList.remove("is-playing");
+    elements.playerToggle.setAttribute("aria-label", "播放");
+  });
+  elements.audio.addEventListener("timeupdate", () => {
+    elements.currentTime.textContent = formatDuration(elements.audio.currentTime);
+    elements.progressSlider.value = elements.audio.duration ? Math.round(elements.audio.currentTime / elements.audio.duration * 1000) : 0;
+  });
+  elements.audio.addEventListener("loadedmetadata", () => {
+    elements.durationTime.textContent = formatDuration(elements.audio.duration);
+  });
+  elements.progressSlider.addEventListener("input", () => {
+    if (elements.audio.duration) elements.audio.currentTime = Number(elements.progressSlider.value) / 1000 * elements.audio.duration;
+  });
+  elements.playerVolume.addEventListener("input", () => {
+    elements.audio.volume = Number(elements.playerVolume.value);
+  });
 
   updateInputState();
   renderSelectedVoice();

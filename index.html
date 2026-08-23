@@ -269,7 +269,11 @@
             <div><span class="panel-kicker">学习与记忆</span><h1 id="wordLoopTitle">单词循环</h1><p>一行输入一个单词或短句，自动重复朗读并按设定间隔合成音频</p></div>
             <div class="word-loop-heading-actions">
               <button class="button button-quiet" id="wordLoopImportButton" type="button"><i data-lucide="files"></i><span>导入 TXT</span></button>
-              <button class="button button-primary" id="wordLoopExportButton" type="button" disabled><i data-lucide="download"></i><span>导出 WAV</span></button>
+              <div class="word-loop-export-control">
+                <label class="sr-only" for="wordLoopExportFormat">导出格式</label>
+                <select id="wordLoopExportFormat" aria-label="导出格式"><option value="mp3">MP3</option><option value="wav">WAV</option></select>
+                <button class="button button-primary" id="wordLoopExportButton" type="button" disabled><i data-lucide="download"></i><span>导出 MP3</span></button>
+              </div>
             </div>
           </section>
 
@@ -277,10 +281,10 @@
             <section class="tool-panel word-loop-input-panel" aria-labelledby="wordLoopInputTitle">
               <div class="panel-heading">
                 <div><span class="panel-kicker">朗读内容</span><h2 id="wordLoopInputTitle">单词与短句</h2></div>
-                <span class="character-count"><strong id="wordLoopLineCount">0</strong> / 500 行</span>
+                <span class="character-count"><strong id="wordLoopLineCount">0</strong> / 10,000 行</span>
               </div>
               <label class="sr-only" for="wordLoopInput">每行一个单词或短句</label>
-              <textarea id="wordLoopInput" maxlength="50500" placeholder="每行输入一个单词或短句，例如：&#10;apple&#10;good morning&#10;谢谢">apple
+              <textarea id="wordLoopInput" maxlength="1010000" placeholder="每行输入一个单词或短句，例如：&#10;apple&#10;good morning&#10;谢谢">apple
 banana
 orange</textarea>
               <div class="word-loop-input-footer">
@@ -326,8 +330,15 @@ orange</textarea>
               <div><dt>预计播放</dt><dd id="wordLoopDuration">--</dd></div>
             </dl>
             <div class="word-loop-result" id="wordLoopResult" hidden>
-              <audio id="wordLoopAudio" controls preload="metadata"></audio>
-              <span id="wordLoopResultMeta"></span>
+              <div class="word-loop-result-heading"><span class="result-avatar"><i data-lucide="repeat-2"></i></span><div><strong>循环音频</strong><span id="wordLoopResultMeta"></span></div></div>
+              <div class="player-controls word-loop-player-controls">
+                <button class="player-button" id="wordLoopPlayerToggle" type="button" aria-label="播放"><i class="play-icon" data-lucide="play"></i><i class="pause-icon" data-lucide="pause"></i></button>
+                <span class="time-label"><b id="wordLoopCurrentTime">00:00</b> / <span id="wordLoopDurationTime">00:00</span></span>
+                <input class="progress-slider" id="wordLoopProgressSlider" type="range" min="0" max="1000" value="0" aria-label="播放进度">
+                <i class="volume-icon" data-lucide="volume-2"></i>
+                <input class="volume-slider" id="wordLoopPlayerVolume" type="range" min="0" max="1" value="1" step="0.05" aria-label="播放音量">
+              </div>
+              <audio id="wordLoopAudio" preload="metadata" hidden></audio>
             </div>
             <div class="word-loop-error" id="wordLoopError" role="alert" hidden></div>
             <ol class="word-loop-task-list" id="wordLoopTaskList" aria-live="polite"></ol>
