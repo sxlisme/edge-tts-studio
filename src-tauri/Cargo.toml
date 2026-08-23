@@ -1,6 +1,6 @@
 [package]
 name = "voice-studio"
-version = "1.4.1"
+version = "1.4.2"
 description = "A compact cross-platform text-to-speech studio"
 authors = ["sxlisme <blackberrysxl@163.com>"]
 edition = "2021"
