@@ -10,7 +10,41 @@ permissions:
   contents: write
 
 jobs:
+  notify-start:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    env:
+      BARK_DEVICE_KEY: ${{ secrets.BARK_DEVICE_KEY }}
+      BARK_SERVER: ${{ vars.BARK_SERVER || 'https://api.day.app' }}
+      RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Notify Bark that the build started
+        if: env.BARK_DEVICE_KEY != ''
+        continue-on-error: true
+        run: |
+          body=$(printf '引用：%s\n触发人：%s' "$GITHUB_REF_NAME" "$GITHUB_ACTOR")
+          payload=$(jq -n \
+            --arg key "$BARK_DEVICE_KEY" \
+            --arg title "声工坊开始构建" \
+            --arg body "$body" \
+            --arg url "$RUN_URL" \
+            '{
+              device_key: $key,
+              title: $title,
+              body: $body,
+              group: "声工坊构建",
+              sound: "bell",
+              url: $url
+            }')
+
+          curl --fail --silent --show-error \
+            --retry 2 --retry-all-errors --max-time 15 \
+            --request POST "$BARK_SERVER/push" \
+            --header "Content-Type: application/json; charset=utf-8" \
+            --data "$payload"
+
   build:
+    needs: notify-start
     strategy:
       fail-fast: false
       matrix:
@@ -64,3 +98,55 @@ jobs:
             release-artifacts/**/*.exe
             release-artifacts/**/*.msi
           generate_release_notes: true
+
+  notify-finish:
+    if: always()
+    needs:
+      - build
+      - release
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    env:
+      BARK_DEVICE_KEY: ${{ secrets.BARK_DEVICE_KEY }}
+      BARK_SERVER: ${{ vars.BARK_SERVER || 'https://api.day.app' }}
+      BUILD_RESULT: ${{ needs.build.result }}
+      RELEASE_RESULT: ${{ needs.release.result }}
+      RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Notify Bark of the build result
+        if: env.BARK_DEVICE_KEY != ''
+        continue-on-error: true
+        run: |
+          if [ "$BUILD_RESULT" = "success" ] && \
+             { [ "$RELEASE_RESULT" = "success" ] || [ "$RELEASE_RESULT" = "skipped" ]; }; then
+            title="声工坊构建成功"
+            summary="macOS 和 Windows 安装包已生成"
+            sound="minuet"
+          else
+            title="声工坊构建失败"
+            summary="请点击通知查看失败日志"
+            sound="alarm"
+          fi
+
+          body=$(printf '引用：%s\n%s\n构建：%s，发布：%s' \
+            "$GITHUB_REF_NAME" "$summary" "$BUILD_RESULT" "$RELEASE_RESULT")
+          payload=$(jq -n \
+            --arg key "$BARK_DEVICE_KEY" \
+            --arg title "$title" \
+            --arg body "$body" \
+            --arg sound "$sound" \
+            --arg url "$RUN_URL" \
+            '{
+              device_key: $key,
+              title: $title,
+              body: $body,
+              sound: $sound,
+              group: "声工坊构建",
+              url: $url
+            }')
+
+          curl --fail --silent --show-error \
+            --retry 2 --retry-all-errors --max-time 15 \
+            --request POST "$BARK_SERVER/push" \
+            --header "Content-Type: application/json; charset=utf-8" \
+            --data "$payload"

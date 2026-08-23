@@ -263,6 +263,8 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
 推送名称符合 `v*` 的 Git 标签时，桌面工作流还会创建 GitHub Release，并把 DMG、EXE 和 MSI 附加到 Release。正式对外发布 macOS 或移动端制品前，需要在仓库中配置对应的开发者证书和签名密钥。
 
+桌面工作流支持通过 Bark 推送构建状态。需要在仓库的 `Settings → Secrets and variables → Actions` 中添加 Repository Secret `BARK_DEVICE_KEY`，内容为 Bark 设备地址最后一段的 Device Key。也可以添加 Repository Variable `BARK_SERVER` 指向自建服务，未配置时默认使用 `https://api.day.app`。工作流会在开始构建以及构建成功或失败时通知，点击通知可直接打开对应的 GitHub Actions 日志。
+
 ## 项目结构
 
 ```text
