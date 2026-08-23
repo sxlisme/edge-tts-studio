@@ -16,12 +16,13 @@
       <aside class="sidebar" id="sidebar">
         <div class="sidebar-brand">
           <span class="sidebar-logo"><i data-lucide="audio-waveform"></i></span>
-          <div><strong>声工坊</strong><span>Voice Studio</span></div>
+          <div><span class="sidebar-brand-title"><strong>声工坊</strong><small data-app-version>--</small></span><span>Voice Studio</span></div>
           <button class="icon-button sidebar-close-button" id="sidebarCloseButton" type="button" aria-label="关闭菜单"><i data-lucide="x"></i></button>
         </div>
 
         <nav class="sidebar-nav" aria-label="主要导航">
           <button class="sidebar-link is-active" id="sidebarWorkspaceButton" type="button" data-scroll-target="workspaceTop"><i data-lucide="layout-dashboard"></i><span>语音工作台</span></button>
+          <button class="sidebar-link" id="sidebarWordLoopButton" type="button"><i data-lucide="repeat-2"></i><span>单词循环</span></button>
           <button class="sidebar-link" id="sidebarVoiceCatalogButton" type="button"><i data-lucide="library-big"></i><span>音色展示</span></button>
           <button class="sidebar-link" id="sidebarAudioInspectionButton" type="button"><i data-lucide="scan-line"></i><span>音频检测</span></button>
           <button class="sidebar-link" id="sidebarApiButton" type="button"><i data-lucide="braces"></i><span>API 接口</span></button>
@@ -40,6 +41,7 @@
           <div class="mobile-brand">
             <span class="mobile-logo"><i data-lucide="audio-waveform"></i></span>
             <strong>声工坊</strong>
+            <span class="app-version-badge" data-app-version>--</span>
           </div>
           <button class="icon-button menu-button" id="menuButton" type="button" title="打开菜单" aria-label="打开菜单" aria-controls="sidebar" aria-expanded="false"><i data-lucide="menu"></i></button>
 
@@ -237,7 +239,10 @@
                 <span class="ui-select-value"><strong>全部语言</strong><small>正在载入</small></span>
                 <i data-lucide="chevron-down"></i>
               </button>
-              <div class="ui-select-popover" hidden><div class="ui-select-options" role="listbox" aria-label="按语言筛选音色"></div></div>
+              <div class="ui-select-popover" hidden>
+                <label class="ui-select-search"><i data-lucide="search"></i><input type="search" placeholder="搜索语言" autocomplete="off" aria-label="搜索语言"></label>
+                <div class="ui-select-options" role="listbox" aria-label="按语言筛选音色"></div>
+              </div>
             </div>
             <div class="catalog-gender-filter" role="group" aria-label="按性别筛选">
               <button class="is-selected" type="button" data-catalog-gender="">全部</button>
@@ -247,12 +252,85 @@
           </section>
 
           <section class="catalog-results" aria-live="polite">
-            <div class="catalog-results-summary"><span>筛选结果</span><strong id="catalogResultCount">0</strong></div>
-            <div class="catalog-columns" aria-hidden="true"><span>音色</span><span>语言</span><span>性别</span><span>内容类型</span><span>声音风格</span><span>推荐场景</span><span>操作</span></div>
-            <div class="catalog-loading" id="catalogLoading"><i data-lucide="loader-circle"></i><span>正在载入全部音色</span></div>
-            <div class="catalog-error" id="catalogError" hidden><i data-lucide="triangle-alert"></i><span id="catalogErrorMessage">音色载入失败</span><button class="button button-quiet compact-button" id="catalogRetryButton" type="button">重新载入</button></div>
-            <div class="catalog-empty" id="catalogEmpty" hidden><i data-lucide="search-x"></i><span>没有匹配的音色</span></div>
-            <ol class="catalog-list" id="catalogList"></ol>
+            <div class="catalog-results-summary"><span>筛选结果</span><strong id="catalogResultCount">0</strong><span class="catalog-preview-status" id="catalogPreviewStatus" aria-live="polite"></span></div>
+            <div class="catalog-table-scroll">
+              <div class="catalog-columns" aria-hidden="true"><span>音色</span><span>语言</span><span>性别</span><span>内容类型</span><span>声音风格</span><span>推荐场景</span><span>试听与操作</span></div>
+              <div class="catalog-loading" id="catalogLoading"><i data-lucide="loader-circle"></i><span>正在载入全部音色</span></div>
+              <div class="catalog-error" id="catalogError" hidden><i data-lucide="triangle-alert"></i><span id="catalogErrorMessage">音色载入失败</span><button class="button button-quiet compact-button" id="catalogRetryButton" type="button">重新载入</button></div>
+              <div class="catalog-empty" id="catalogEmpty" hidden><i data-lucide="search-x"></i><span>没有匹配的音色</span></div>
+              <ol class="catalog-list" id="catalogList"></ol>
+            </div>
+            <audio id="catalogPreviewAudio" preload="none" hidden></audio>
+          </section>
+        </main>
+
+        <main class="content word-loop-view" id="wordLoopView" hidden>
+          <section class="word-loop-heading" aria-labelledby="wordLoopTitle">
+            <div><span class="panel-kicker">学习与记忆</span><h1 id="wordLoopTitle">单词循环</h1><p>一行输入一个单词或短句，自动重复朗读并按设定间隔合成音频</p></div>
+            <div class="word-loop-heading-actions">
+              <button class="button button-quiet" id="wordLoopImportButton" type="button"><i data-lucide="files"></i><span>导入 TXT</span></button>
+              <button class="button button-primary" id="wordLoopExportButton" type="button" disabled><i data-lucide="download"></i><span>导出 WAV</span></button>
+            </div>
+          </section>
+
+          <div class="word-loop-layout">
+            <section class="tool-panel word-loop-input-panel" aria-labelledby="wordLoopInputTitle">
+              <div class="panel-heading">
+                <div><span class="panel-kicker">朗读内容</span><h2 id="wordLoopInputTitle">单词与短句</h2></div>
+                <span class="character-count"><strong id="wordLoopLineCount">0</strong> / 500 行</span>
+              </div>
+              <label class="sr-only" for="wordLoopInput">每行一个单词或短句</label>
+              <textarea id="wordLoopInput" maxlength="50500" placeholder="每行输入一个单词或短句，例如：&#10;apple&#10;good morning&#10;谢谢">apple
+banana
+orange</textarea>
+              <div class="word-loop-input-footer">
+                <span id="wordLoopInputHint">空行会自动忽略，每行最多 100 字</span>
+                <button class="button button-quiet compact-button" id="wordLoopClearButton" type="button"><i data-lucide="eraser"></i><span>清空</span></button>
+              </div>
+            </section>
+
+            <section class="tool-panel word-loop-settings-panel" aria-labelledby="wordLoopSettingsTitle">
+              <div class="panel-heading"><div><span class="panel-kicker">朗读方式</span><h2 id="wordLoopSettingsTitle">循环设置</h2></div></div>
+              <div class="field word-loop-voice-field">
+                <label class="field-label" for="wordLoopVoiceSearch">朗读音色</label>
+                <div class="word-loop-voice-picker" id="wordLoopVoicePicker">
+                  <label class="word-loop-voice-search"><i data-lucide="search"></i><input id="wordLoopVoiceSearch" type="search" placeholder="搜索音色名称、语言或地区" autocomplete="off"><i data-lucide="chevron-down"></i></label>
+                  <div class="word-loop-voice-results" id="wordLoopVoiceResults" role="listbox" aria-label="选择朗读音色" hidden></div>
+                </div>
+                <div class="word-loop-selected-voice" id="wordLoopSelectedVoice"><span class="voice-prefix">声</span><div><strong>正在载入音色</strong><small>请稍候</small></div></div>
+              </div>
+              <div class="word-loop-number-grid">
+                <label class="field"><span class="field-label">每个内容播放次数</span><span class="number-input"><input id="wordLoopRepeatCount" type="number" min="1" max="20" value="3" step="1"><small>次</small></span></label>
+                <label class="field"><span class="field-label">重复之间间隔</span><span class="number-input"><input id="wordLoopRepeatGap" type="number" min="0" max="10000" value="800" step="100"><small>毫秒</small></span></label>
+                <label class="field"><span class="field-label">下一个内容前间隔</span><span class="number-input"><input id="wordLoopNextGap" type="number" min="0" max="10000" value="1500" step="100"><small>毫秒</small></span></label>
+                <label class="field"><span class="field-label">朗读速度</span><span class="number-input"><input id="wordLoopRate" type="number" min="-100" max="100" value="0" step="5"><small>%</small></span></label>
+              </div>
+              <div class="word-loop-generate-actions">
+                <button class="button button-danger" id="wordLoopStopButton" type="button" hidden><i data-lucide="square"></i><span>停止生成</span></button>
+                <button class="button button-generate" id="wordLoopGenerateButton" type="button" disabled><i class="button-icon" data-lucide="audio-waveform"></i><i class="button-loader" data-lucide="loader-circle"></i><span>生成循环音频</span></button>
+              </div>
+              <p class="word-loop-rule">同时生成 3 个语音任务；单项失败会自动重试 3 次。</p>
+            </section>
+          </div>
+
+          <section class="tool-panel word-loop-progress-panel" id="wordLoopProgressPanel" aria-labelledby="wordLoopProgressTitle">
+            <div class="panel-heading word-loop-progress-heading">
+              <div><span class="panel-kicker">生成状态</span><h2 id="wordLoopProgressTitle">任务进度</h2></div>
+              <strong id="wordLoopPercent">0.00%</strong>
+            </div>
+            <div class="word-loop-progress-line"><progress id="wordLoopProgressBar" value="0" max="1"></progress><span id="wordLoopProgressText">等待开始</span></div>
+            <dl class="word-loop-stats">
+              <div><dt>总数量</dt><dd id="wordLoopTotalCount">0</dd></div>
+              <div><dt>生成成功</dt><dd id="wordLoopSuccessCount">0</dd></div>
+              <div><dt>失败数量</dt><dd id="wordLoopFailedCount">0</dd></div>
+              <div><dt>预计播放</dt><dd id="wordLoopDuration">--</dd></div>
+            </dl>
+            <div class="word-loop-result" id="wordLoopResult" hidden>
+              <audio id="wordLoopAudio" controls preload="metadata"></audio>
+              <span id="wordLoopResultMeta"></span>
+            </div>
+            <div class="word-loop-error" id="wordLoopError" role="alert" hidden></div>
+            <ol class="word-loop-task-list" id="wordLoopTaskList" aria-live="polite"></ol>
           </section>
         </main>
 

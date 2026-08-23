@@ -2,6 +2,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { initializeAudioInspection } from "./audio-inspection.js";
+import { initializeWordLoop } from "./word-loop.js";
 import {
   ArrowDown,
   ArrowUp,
@@ -36,6 +37,7 @@ import {
   Play,
   Plus,
   RotateCcw,
+  Repeat2,
   Save,
   Scan,
   ScanLine,
@@ -92,6 +94,7 @@ const iconSet = {
   Play,
   Plus,
   RotateCcw,
+  Repeat2,
   Save,
   Scan,
   ScanLine,
@@ -190,6 +193,7 @@ const elements = {
   advancedSaveStatus: document.querySelector("#advancedSaveStatus"),
   workspaceView: document.querySelector("#workspaceTop"),
   voiceCatalogView: document.querySelector("#voiceCatalogView"),
+  wordLoopView: document.querySelector("#wordLoopView"),
   audioInspectionView: document.querySelector("#audioInspectionView"),
   projectSummaryLabel: document.querySelector("#projectSummaryLabel"),
   projectSummaryTitle: document.querySelector("#projectSummaryTitle"),
@@ -202,8 +206,11 @@ const elements = {
   catalogErrorMessage: document.querySelector("#catalogErrorMessage"),
   catalogEmpty: document.querySelector("#catalogEmpty"),
   catalogList: document.querySelector("#catalogList"),
+  catalogPreviewStatus: document.querySelector("#catalogPreviewStatus"),
+  catalogPreviewAudio: document.querySelector("#catalogPreviewAudio"),
   systemVersion: document.querySelector("#systemVersion"),
   applicationVersion: document.querySelector("#applicationVersion"),
+  appVersionBadges: document.querySelectorAll("[data-app-version]"),
   desktopExportSection: document.querySelector("#desktopExportSection"),
   exportDirectoryPath: document.querySelector("#exportDirectoryPath"),
   chooseExportDirectoryButton: document.querySelector("#chooseExportDirectoryButton"),
@@ -290,6 +297,10 @@ let catalogLanguageControl = null;
 let catalogVoices = [];
 let catalogGender = "";
 let catalogRenderTimer = null;
+let catalogPreviewBlobUrl = null;
+let catalogPreviewButton = null;
+let catalogPreviewRequestSequence = 0;
+const catalogPreviewTexts = new Map();
 let audioContext = null;
 let audioAnalyser = null;
 let audioSource = null;
@@ -316,6 +327,9 @@ const accessibilityDefaults = { zoom: 100, highContrast: false, reduceMotion: fa
 const maxTextLength = Number(document.body.dataset.maxText) || 10_000;
 const maxBatchFiles = 50;
 const batchConcurrency = 3;
+const maxCatalogPreviewLength = 20;
+const chineseCatalogPreviewText = "你好，欢迎试听这个音色。";
+const englishCatalogPreviewText = "Hello, voice test.";
 
 function signedValue(value, suffix) {
   const number = Number(value);
@@ -418,7 +432,7 @@ function createUiSelect(root, onChange) {
     optionsElement.replaceChildren();
     const query = filter.trim().toLocaleLowerCase("zh-CN");
     const visibleOptions = options.filter((option) => {
-      const content = `${option.label} ${option.description || ""} ${option.code || ""}`;
+      const content = `${option.label} ${option.description || ""} ${option.code || ""} ${option.keywords || ""} ${option.value}`;
       return !query || content.toLocaleLowerCase("zh-CN").includes(query);
     });
 
@@ -710,6 +724,13 @@ function createCatalogTags(items, extraClass = "") {
 }
 
 function catalogLanguageOptions(voices) {
+  const preferredLanguages = ["zh", "en", "ja", "ko"];
+  const languageSearchKeywords = {
+    zh: "中文 汉语 Chinese",
+    en: "英文 英语 English",
+    ja: "日文 日语 Japanese",
+    ko: "韩文 韩语 Korean",
+  };
   const counts = new Map();
   for (const voice of voices) {
     const languageCode = voice.locale.split("-")[0].toLocaleLowerCase("en-US");
@@ -719,16 +740,100 @@ function catalogLanguageOptions(voices) {
     value,
     label: `${catalogLanguageName(value)}（${count}）`,
     description: `${count} 个音色`,
+    keywords: languageSearchKeywords[value] || "",
   }));
-  options.sort((left, right) => left.label.localeCompare(right.label, "zh-CN"));
+  options.sort((left, right) => {
+    const leftPriority = preferredLanguages.indexOf(left.value);
+    const rightPriority = preferredLanguages.indexOf(right.value);
+    const normalizedLeftPriority = leftPriority === -1 ? preferredLanguages.length : leftPriority;
+    const normalizedRightPriority = rightPriority === -1 ? preferredLanguages.length : rightPriority;
+    return normalizedLeftPriority - normalizedRightPriority
+      || left.label.localeCompare(right.label, "zh-CN");
+  });
   return [
-    { value: "", label: `全部语言（${voices.length}）`, description: `${options.length} 种语言` },
+    { value: "", label: `全部语言（${voices.length}）`, description: `${options.length} 种语言`, keywords: "全部 all" },
     ...options,
   ];
 }
 
+function defaultCatalogPreviewText(voice) {
+  return voice.locale.toLocaleLowerCase("en-US").startsWith("zh-")
+    ? chineseCatalogPreviewText
+    : englishCatalogPreviewText;
+}
+
+function updateCatalogPreviewCount(input) {
+  const counter = input.closest(".catalog-preview-field")?.querySelector(".catalog-preview-count");
+  if (counter) counter.textContent = `${Array.from(input.value).length}/${maxCatalogPreviewLength}`;
+}
+
+function setCatalogPreviewButtonState(button, state = "idle") {
+  if (!button) return;
+  const voiceName = button.dataset.voiceName || "该音色";
+  button.classList.toggle("is-loading", state === "loading");
+  button.classList.toggle("is-playing", state === "playing");
+  button.disabled = state === "loading";
+  button.querySelector(".catalog-preview-label").textContent = state === "playing" ? "停止" : "试听";
+  button.setAttribute("aria-label", state === "playing" ? `停止试听${voiceName}` : `试听${voiceName}音色`);
+}
+
+function stopCatalogPreview(status = "") {
+  catalogPreviewRequestSequence += 1;
+  elements.catalogPreviewAudio.pause();
+  elements.catalogPreviewAudio.removeAttribute("src");
+  elements.catalogPreviewAudio.load();
+  if (catalogPreviewBlobUrl) URL.revokeObjectURL(catalogPreviewBlobUrl);
+  catalogPreviewBlobUrl = null;
+  setCatalogPreviewButtonState(catalogPreviewButton);
+  catalogPreviewButton = null;
+  elements.catalogPreviewStatus.textContent = status;
+}
+
+async function previewCatalogVoice(voice, input, button) {
+  if (catalogPreviewButton === button && button.classList.contains("is-playing")) {
+    stopCatalogPreview("试听已停止");
+    return;
+  }
+
+  stopCatalogPreview();
+  const sequence = catalogPreviewRequestSequence;
+  const previewText = input.value.trim() || defaultCatalogPreviewText(voice);
+  input.value = Array.from(previewText).slice(0, maxCatalogPreviewLength).join("");
+  updateCatalogPreviewCount(input);
+  catalogPreviewTexts.set(voice.shortName, input.value);
+  catalogPreviewButton = button;
+  button.title = `试听${voice.displayName}音色`;
+  setCatalogPreviewButtonState(button, "loading");
+  elements.catalogPreviewStatus.textContent = `正在生成 ${voice.displayName} 的试听`;
+
+  try {
+    const result = await invoke("preview_voice", {
+      options: {
+        text: input.value,
+        voice: voice.shortName,
+        rate: "+0%",
+        volume: "+0%",
+        pitch: "+0Hz",
+      },
+    });
+    if (sequence !== catalogPreviewRequestSequence || catalogPreviewButton !== button) return;
+    catalogPreviewBlobUrl = URL.createObjectURL(blobFromBase64(result.audioBase64));
+    elements.catalogPreviewAudio.src = catalogPreviewBlobUrl;
+    await elements.catalogPreviewAudio.play();
+    if (sequence !== catalogPreviewRequestSequence || catalogPreviewButton !== button) return;
+    setCatalogPreviewButtonState(button, "playing");
+    elements.catalogPreviewStatus.textContent = `正在试听 ${voice.displayName}`;
+  } catch (error) {
+    if (sequence !== catalogPreviewRequestSequence || catalogPreviewButton !== button) return;
+    const normalized = normalizedNativeError(error, "音色试听失败");
+    stopCatalogPreview(`试听失败：${normalized.message}`);
+    button.title = normalized.detail;
+  }
+}
+
 function renderVoiceCatalog() {
   if (!catalogVoices.length) return;
+  stopCatalogPreview();
   const query = elements.catalogSearchInput.value.trim().toLocaleLowerCase("zh-CN");
   const language = catalogLanguageControl.value;
   const filteredVoices = catalogVoices.filter((voice) => {
@@ -759,6 +864,7 @@ function renderVoiceCatalog() {
 
     const voiceCell = document.createElement("div");
     voiceCell.className = "catalog-voice-cell";
+    voiceCell.title = `${voice.displayName} · ${voice.shortName}`;
     const avatar = document.createElement("span");
     avatar.className = "catalog-avatar";
     applyVoiceAvatar(avatar, voice);
@@ -766,8 +872,10 @@ function renderVoiceCatalog() {
     voiceCopy.className = "catalog-voice-copy";
     const voiceName = document.createElement("strong");
     voiceName.textContent = voice.displayName;
+    voiceName.title = voice.displayName;
     const voiceCode = document.createElement("code");
     voiceCode.textContent = voice.shortName;
+    voiceCode.title = voice.shortName;
     voiceCopy.append(voiceName, voiceCode);
     voiceCell.append(avatar, voiceCopy);
 
@@ -801,17 +909,54 @@ function renderVoiceCatalog() {
     usageCell.title = "根据官方内容类别和声音风格推荐";
     usageCell.append(createCatalogTags(recommendedVoiceUses(voice), "usage-tag"));
 
+    const actionCell = document.createElement("div");
+    actionCell.className = "catalog-actions";
+    const previewField = document.createElement("div");
+    previewField.className = "catalog-preview-field";
+    const previewInput = document.createElement("input");
+    previewInput.className = "catalog-preview-input";
+    previewInput.type = "text";
+    previewInput.maxLength = maxCatalogPreviewLength;
+    previewInput.value = catalogPreviewTexts.get(voice.shortName) || defaultCatalogPreviewText(voice);
+    previewInput.placeholder = "试听文本";
+    previewInput.setAttribute("aria-label", `${voice.displayName}试听文本，最多20字`);
+    previewInput.title = "试听文本，最多 20 字";
+    previewInput.addEventListener("input", () => {
+      const characters = Array.from(previewInput.value);
+      if (characters.length > maxCatalogPreviewLength) {
+        previewInput.value = characters.slice(0, maxCatalogPreviewLength).join("");
+      }
+      updateCatalogPreviewCount(previewInput);
+      catalogPreviewTexts.set(voice.shortName, previewInput.value);
+    });
+    const previewCount = document.createElement("span");
+    previewCount.className = "catalog-preview-count";
+    previewCount.setAttribute("aria-hidden", "true");
+    previewField.append(previewInput, previewCount);
+    updateCatalogPreviewCount(previewInput);
+
+    const previewButton = document.createElement("button");
+    previewButton.type = "button";
+    previewButton.className = "catalog-preview-button";
+    previewButton.dataset.voiceName = voice.displayName;
+    previewButton.innerHTML = '<i class="catalog-preview-idle-icon" data-lucide="headphones"></i><i class="catalog-preview-stop-icon" data-lucide="square"></i><i class="catalog-preview-loading-icon" data-lucide="loader-circle"></i><span class="catalog-preview-label">试听</span>';
+    previewButton.title = `试听${voice.displayName}音色`;
+    previewButton.setAttribute("aria-label", `试听${voice.displayName}音色`);
+    previewButton.addEventListener("click", () => previewCatalogVoice(voice, previewInput, previewButton));
+
     const useButton = document.createElement("button");
     useButton.type = "button";
     useButton.className = "catalog-use-button";
     useButton.textContent = "使用";
     useButton.title = `使用${voice.displayName}音色`;
     useButton.addEventListener("click", () => useCatalogVoice(voice));
+    actionCell.append(previewField, previewButton, useButton);
 
-    row.append(voiceCell, localeCell, genderCell, categoryCell, personalityCell, usageCell, useButton);
+    row.append(voiceCell, localeCell, genderCell, categoryCell, personalityCell, usageCell, actionCell);
     fragment.append(row);
   }
   elements.catalogList.replaceChildren(fragment);
+  refreshIcons();
 }
 
 function scheduleVoiceCatalogRender() {
@@ -850,18 +995,24 @@ async function loadVoiceCatalog() {
 function showAppView(view) {
   const showCatalog = view === "catalog";
   const showInspection = view === "inspection";
-  elements.workspaceView.hidden = showCatalog || showInspection;
+  const showWordLoop = view === "word-loop";
+  if (!showCatalog) stopCatalogPreview();
+  if (!showWordLoop) wordLoop.pause();
+  elements.workspaceView.hidden = showCatalog || showInspection || showWordLoop;
   elements.voiceCatalogView.hidden = !showCatalog;
+  elements.wordLoopView.hidden = !showWordLoop;
   elements.audioInspectionView.hidden = !showInspection;
   document.body.classList.toggle("catalog-view", showCatalog);
   document.body.classList.toggle("inspection-view", showInspection);
-  document.querySelector("#sidebarWorkspaceButton").classList.toggle("is-active", !showCatalog && !showInspection);
+  document.body.classList.toggle("word-loop-active", showWordLoop);
+  document.querySelector("#sidebarWorkspaceButton").classList.toggle("is-active", !showCatalog && !showInspection && !showWordLoop);
+  document.querySelector("#sidebarWordLoopButton").classList.toggle("is-active", showWordLoop);
   document.querySelector("#sidebarVoiceCatalogButton").classList.toggle("is-active", showCatalog);
   document.querySelector("#sidebarAudioInspectionButton").classList.toggle("is-active", showInspection);
-  elements.projectSummaryLabel.textContent = showCatalog ? "音色目录" : showInspection ? "音频工具" : "当前项目";
+  elements.projectSummaryLabel.textContent = showCatalog ? "音色目录" : showInspection ? "音频工具" : showWordLoop ? "学习工具" : "当前项目";
   elements.projectSummaryTitle.textContent = showCatalog
     ? catalogVoices.length ? `${catalogVoices.length} 个在线音色` : "全部在线音色"
-    : showInspection ? "检测、剪辑与拼接" : "默认语音项目";
+    : showInspection ? "检测、剪辑与拼接" : showWordLoop ? "单词循环朗读" : "默认语音项目";
   closeSidebar();
   window.scrollTo({ top: 0, behavior: document.body.classList.contains("reduce-motion") ? "auto" : "smooth" });
 }
@@ -1366,6 +1517,7 @@ async function loadAppInformation() {
     const information = await invoke("app_information");
     elements.systemVersion.textContent = information.systemVersion;
     elements.applicationVersion.textContent = information.appVersion;
+    for (const badge of elements.appVersionBadges) badge.textContent = information.appVersion;
     isDesktopApp = information.desktop === true;
     elements.desktopExportSection.hidden = !isDesktopApp;
     if (isDesktopApp && exportDirectory) {
@@ -1379,7 +1531,8 @@ async function loadAppInformation() {
     }
   } catch (_) {
     elements.systemVersion.textContent = navigator.platform || "当前设备";
-    elements.applicationVersion.textContent = "v1.2.0";
+    elements.applicationVersion.textContent = "v1.3.0";
+    for (const badge of elements.appVersionBadges) badge.textContent = "v1.3.0";
   }
 }
 
@@ -2003,6 +2156,10 @@ document.querySelector("#sidebarVoiceCatalogButton").addEventListener("click", (
   showAppView("catalog");
   loadVoiceCatalog();
 });
+document.querySelector("#sidebarWordLoopButton").addEventListener("click", () => {
+  showAppView("word-loop");
+  wordLoop.prepare();
+});
 document.querySelector("#sidebarAudioInspectionButton").addEventListener("click", () => {
   showAppView("inspection");
   audioInspection.prepare();
@@ -2109,7 +2266,14 @@ window.addEventListener("resize", () => {
   if (window.innerWidth > 1240) closeSidebar();
 });
 
-window.addEventListener("beforeunload", revokeGeneratedBlob);
+elements.catalogPreviewAudio.addEventListener("ended", () => stopCatalogPreview("试听完成"));
+elements.catalogPreviewAudio.addEventListener("error", () => {
+  if (elements.catalogPreviewAudio.getAttribute("src")) stopCatalogPreview("试听播放失败");
+});
+window.addEventListener("beforeunload", () => {
+  revokeGeneratedBlob();
+  stopCatalogPreview();
+});
 document.addEventListener("pointerdown", (event) => {
   if (activeSelectControl && !activeSelectControl.root.contains(event.target)) activeSelectControl.close();
   if (!elements.errorDetailControl.contains(event.target)) {
@@ -2127,6 +2291,7 @@ catalogLanguageControl = createUiSelect(elements.catalogLanguageSelect, renderVo
 localeControl.setOptions(languageOptions);
 localeControl.setValue("zh-CN");
 const audioInspection = initializeAudioInspection(refreshIcons);
+const wordLoop = initializeWordLoop(refreshIcons);
 restoreAccessibilitySettings();
 restoreExportDirectory();
 restoreDraft();

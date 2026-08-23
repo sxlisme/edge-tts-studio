@@ -24,6 +24,8 @@ use uuid::Uuid;
 
 const DEFAULT_VOICE: &str = "zh-CN-XiaoxiaoNeural";
 const MAX_TEXT_LENGTH: usize = 10_000;
+const MAX_VOICE_PREVIEW_TEXT_LENGTH: usize = 20;
+const MAX_WORD_LOOP_TEXT_LENGTH: usize = 100;
 const MAX_LONG_TEXT_LENGTH: usize = 500_000;
 const LONG_TEXT_CHUNK_LENGTH: usize = 5_000;
 const LONG_TEXT_CONCURRENCY: usize = 3;
@@ -125,6 +127,12 @@ pub struct HistoryResponse {
 #[serde(rename_all = "camelCase")]
 pub struct SynthesisResult {
     pub record: HistoryRecord,
+    pub audio_base64: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoicePreviewResult {
     pub audio_base64: String,
 }
 
@@ -283,6 +291,31 @@ impl AppCore {
         Ok(SynthesisResult {
             audio_base64: BASE64.encode(&stored.audio),
             record: stored.record,
+        })
+    }
+
+    pub async fn preview_voice(&self, options: SynthesisOptions) -> CoreResult<VoicePreviewResult> {
+        let validated = validate_synthesis_options(options, MAX_VOICE_PREVIEW_TEXT_LENGTH)?;
+        let audio = synthesize_with_timeout(&validated).await?;
+        if audio.is_empty() {
+            return Err(CoreError::Speech("没有返回音频数据".to_owned()));
+        }
+        Ok(VoicePreviewResult {
+            audio_base64: BASE64.encode(audio),
+        })
+    }
+
+    pub async fn synthesize_word_loop_item(
+        &self,
+        options: SynthesisOptions,
+    ) -> CoreResult<VoicePreviewResult> {
+        let validated = validate_synthesis_options(options, MAX_WORD_LOOP_TEXT_LENGTH)?;
+        let audio = synthesize_with_timeout(&validated).await?;
+        if audio.is_empty() {
+            return Err(CoreError::Speech("没有返回音频数据".to_owned()));
+        }
+        Ok(VoicePreviewResult {
+            audio_base64: BASE64.encode(audio),
         })
     }
 
@@ -1215,6 +1248,34 @@ mod tests {
         let mut invalid_rate = synthesis_options("你好");
         invalid_rate.rate = "+101%".to_owned();
         assert!(ValidatedOptions::try_from(invalid_rate).is_err());
+    }
+
+    #[test]
+    fn limits_voice_preview_text_to_twenty_characters() {
+        assert!(validate_synthesis_options(
+            synthesis_options(&"字".repeat(MAX_VOICE_PREVIEW_TEXT_LENGTH)),
+            MAX_VOICE_PREVIEW_TEXT_LENGTH,
+        )
+        .is_ok());
+        assert!(validate_synthesis_options(
+            synthesis_options(&"字".repeat(MAX_VOICE_PREVIEW_TEXT_LENGTH + 1)),
+            MAX_VOICE_PREVIEW_TEXT_LENGTH,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn limits_word_loop_items_to_one_hundred_characters() {
+        assert!(validate_synthesis_options(
+            synthesis_options(&"字".repeat(MAX_WORD_LOOP_TEXT_LENGTH)),
+            MAX_WORD_LOOP_TEXT_LENGTH,
+        )
+        .is_ok());
+        assert!(validate_synthesis_options(
+            synthesis_options(&"字".repeat(MAX_WORD_LOOP_TEXT_LENGTH + 1)),
+            MAX_WORD_LOOP_TEXT_LENGTH,
+        )
+        .is_err());
     }
 
     #[test]

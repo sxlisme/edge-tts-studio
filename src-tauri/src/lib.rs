@@ -7,7 +7,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use core::{
     AppCore, AudioPayload, BatchTextFile, HistoryRecord, HistoryResponse, LongSynthesisProgress,
-    LongTextFileInfo, SynthesisOptions, SynthesisResult, VoicesResponse,
+    LongTextFileInfo, SynthesisOptions, SynthesisResult, VoicePreviewResult, VoicesResponse,
 };
 use serde::Serialize;
 use tauri::{ipc::Channel, Manager, State};
@@ -36,6 +36,26 @@ async fn synthesize(
     options: SynthesisOptions,
 ) -> Result<SynthesisResult, String> {
     core.synthesize(options)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn preview_voice(
+    core: State<'_, Arc<AppCore>>,
+    options: SynthesisOptions,
+) -> Result<VoicePreviewResult, String> {
+    core.preview_voice(options)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn synthesize_word_loop_item(
+    core: State<'_, Arc<AppCore>>,
+    options: SynthesisOptions,
+) -> Result<VoicePreviewResult, String> {
+    core.synthesize_word_loop_item(options)
         .await
         .map_err(|error| error.to_string())
 }
@@ -198,6 +218,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_voices,
             synthesize,
+            preview_voice,
+            synthesize_word_loop_item,
             synthesize_batch_item,
             cancel_batch,
             cancel_long_text,

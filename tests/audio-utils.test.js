@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { inspectAudioBuffer, renderClipsToWav } from "../static/audio-utils.js";
+import { inspectAudioBuffer, renderClipsToWav, renderTimelineToWav } from "../static/audio-utils.js";
 
 function audioBuffer(channels, sampleRate) {
   return {
@@ -52,4 +52,20 @@ test("renders ordered clips to a valid PCM WAV", () => {
   assert.equal(view.getUint32(40, true), 8);
   assert.equal(view.getInt16(44, true), 16384);
   assert.equal(view.getInt16(48, true), -32768);
+});
+
+test("renders exact silence between timeline audio items", () => {
+  const source = audioBuffer([Float32Array.from([0.5, -0.5])], 2);
+  const wav = renderTimelineToWav([
+    { buffer: source },
+    { silenceSeconds: 1 },
+    { buffer: source },
+  ], 2);
+  const view = new DataView(wav.buffer);
+
+  assert.equal(view.getUint32(40, true), 12);
+  assert.equal(view.getInt16(44, true), 16384);
+  assert.equal(view.getInt16(48, true), 0);
+  assert.equal(view.getInt16(50, true), 0);
+  assert.equal(view.getInt16(52, true), 16384);
 });
