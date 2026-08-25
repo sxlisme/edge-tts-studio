@@ -174,7 +174,7 @@
               <div><span id="longTextProgressText">已成功 0 / 0</span><strong id="longTextPercent">0.00%</strong></div>
               <progress id="longTextProgressBar" value="0" max="1"></progress>
             </div>
-            <p class="long-text-warning"><i data-lucide="triangle-alert"></i><span>过长可能导致生成失败。系统会按标点或空格切分，每段不超过 5000 字，3 个任务并发生成，单段失败后重试 3 次。</span></p>
+            <p class="long-text-warning"><i data-lucide="triangle-alert"></i><span>过长可能导致生成失败。系统会按标点或空格切分，每段不超过 5000 字，并发数由高级设置控制，单段失败后重试 3 次。</span></p>
             <section class="long-text-log" aria-labelledby="longTextLogTitle">
               <div class="long-text-log-heading"><i data-lucide="scroll-text"></i><strong id="longTextLogTitle">任务日志</strong></div>
               <dl class="long-text-log-summary">
@@ -360,7 +360,7 @@ orange</textarea>
                 <button class="button button-danger" id="wordLoopStopButton" type="button" hidden><i data-lucide="square"></i><span>停止生成</span></button>
                 <button class="button button-generate" id="wordLoopGenerateButton" type="button" disabled><i class="button-icon" data-lucide="audio-waveform"></i><i class="button-loader" data-lucide="loader-circle"></i><span>生成循环音频</span></button>
               </div>
-              <p class="word-loop-rule">同时生成 3 个语音任务；单项失败会自动重试 3 次。</p>
+              <p class="word-loop-rule">生成并发数由高级设置控制；单项失败会自动重试 3 次。</p>
             </section>
           </div>
 
@@ -514,6 +514,20 @@ orange</textarea>
           <span class="setting-toggle-copy"><strong>减少动画</strong><small>降低界面动态效果</small></span>
           <input id="reduceMotionInput" type="checkbox"><span class="toggle-track" aria-hidden="true"></span>
         </label>
+      </section>
+
+      <section class="advanced-section" aria-labelledby="generationConcurrencyTitle">
+        <div class="advanced-section-heading">
+          <span class="advanced-section-icon"><i data-lucide="gauge"></i></span>
+          <div><h3 id="generationConcurrencyTitle">语音生成并发数</h3><p>建议保持 1；提高并发可能导致在线请求失败</p></div>
+          <output id="generationConcurrencyOutput" for="generationConcurrencyInput">1 个任务</output>
+        </div>
+        <div class="zoom-control concurrency-control">
+          <button class="icon-button zoom-step-button" id="concurrencyDownButton" type="button" aria-label="降低生成并发数"><i data-lucide="minus"></i></button>
+          <input id="generationConcurrencyInput" type="range" min="1" max="5" value="1" step="1" aria-label="语音生成并发数">
+          <button class="icon-button zoom-step-button" id="concurrencyUpButton" type="button" aria-label="提高生成并发数"><i data-lucide="plus"></i></button>
+        </div>
+        <div class="concurrency-scale" aria-hidden="true"><span>1 · 更稳定</span><span>5 · 更快但可能失败</span></div>
       </section>
 
       <section class="advanced-section export-directory-setting" id="desktopExportSection" aria-labelledby="exportDirectoryTitle" hidden>

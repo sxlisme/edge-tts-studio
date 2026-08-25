@@ -1,6 +1,6 @@
 [package]
 name = "voice-studio"
-version = "1.4.2"
+version = "1.4.3"
 description = "A compact cross-platform text-to-speech studio"
 authors = ["sxlisme <blackberrysxl@163.com>"]
 edition = "2021"
@@ -23,7 +23,7 @@ quick-xml = "0.38"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sysinfo = "0.37"
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2.5.1"
 thiserror = "2"

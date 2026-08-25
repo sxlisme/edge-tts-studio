@@ -113,6 +113,7 @@ async fn synthesize_long_text(
     core: State<'_, Arc<AppCore>>,
     path: String,
     job_id: String,
+    concurrency: usize,
     mut options: SynthesisOptions,
     on_progress: Channel<LongSynthesisProgress>,
 ) -> Result<HistoryRecord, String> {
@@ -123,6 +124,7 @@ async fn synthesize_long_text(
     core.synthesize_long_and_store(
         &job_id,
         options,
+        concurrency,
         Arc::new(move |progress| {
             let _ = on_progress.send(progress);
         }),

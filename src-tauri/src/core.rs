@@ -28,7 +28,8 @@ const MAX_VOICE_PREVIEW_TEXT_LENGTH: usize = 20;
 const MAX_WORD_LOOP_TEXT_LENGTH: usize = 100;
 const MAX_LONG_TEXT_LENGTH: usize = 500_000;
 const LONG_TEXT_CHUNK_LENGTH: usize = 5_000;
-const LONG_TEXT_CONCURRENCY: usize = 3;
+const MIN_GENERATION_CONCURRENCY: usize = 1;
+const MAX_GENERATION_CONCURRENCY: usize = 5;
 const LONG_TEXT_RETRIES: usize = 3;
 const MAX_HISTORY_ITEMS: usize = 50;
 const MAX_BATCH_FILES: usize = 50;
@@ -348,9 +349,11 @@ impl AppCore {
         &self,
         batch_id: &str,
         options: SynthesisOptions,
+        concurrency: usize,
         on_progress: std::sync::Arc<dyn Fn(LongSynthesisProgress) + Send + Sync>,
     ) -> CoreResult<StoredSynthesis> {
         validate_batch_id(batch_id)?;
+        let concurrency = validate_generation_concurrency(concurrency)?;
         let cancellation = {
             let mut cancellations = self.batch_cancellations.lock().await;
             cancellations
@@ -363,7 +366,13 @@ impl AppCore {
         tokio::fs::create_dir_all(&temporary_directory).await?;
 
         let result = self
-            .synthesize_long_inner(options, &temporary_directory, &cancellation, on_progress)
+            .synthesize_long_inner(
+                options,
+                concurrency,
+                &temporary_directory,
+                &cancellation,
+                on_progress,
+            )
             .await;
         self.batch_cancellations.lock().await.remove(batch_id);
         let _ = remove_directory_if_exists(&temporary_directory).await;
@@ -373,6 +382,7 @@ impl AppCore {
     async fn synthesize_long_inner(
         &self,
         options: SynthesisOptions,
+        concurrency: usize,
         temporary_directory: &Path,
         cancellation: &CancellationToken,
         on_progress: std::sync::Arc<dyn Fn(LongSynthesisProgress) + Send + Sync>,
@@ -388,7 +398,7 @@ impl AppCore {
             state: "started",
         });
 
-        // Keep only three network requests active and persist each result immediately.
+        // Persist each segment immediately while limiting active network requests.
         let tasks = stream::iter(chunks.into_iter().enumerate())
             .map(|(index, text)| {
                 let mut chunk_options = validated.clone();
@@ -409,7 +419,7 @@ impl AppCore {
                     CoreResult::Ok(index)
                 }
             })
-            .buffer_unordered(LONG_TEXT_CONCURRENCY);
+            .buffer_unordered(concurrency);
         tokio::pin!(tasks);
 
         let mut completed = 0;
@@ -910,6 +920,15 @@ fn validate_batch_id(batch_id: &str) -> CoreResult<()> {
     Ok(())
 }
 
+fn validate_generation_concurrency(concurrency: usize) -> CoreResult<usize> {
+    if !(MIN_GENERATION_CONCURRENCY..=MAX_GENERATION_CONCURRENCY).contains(&concurrency) {
+        return Err(CoreError::Validation(format!(
+            "语音生成并发数必须在 {MIN_GENERATION_CONCURRENCY} 到 {MAX_GENERATION_CONCURRENCY} 之间"
+        )));
+    }
+    Ok(concurrency)
+}
+
 async fn synthesize_with_timeout(options: &ValidatedOptions) -> CoreResult<Vec<u8>> {
     tokio::time::timeout(SYNTHESIS_TIMEOUT, synthesize_online(options))
         .await
@@ -924,6 +943,13 @@ async fn synthesize_long_chunk(
     on_progress: &std::sync::Arc<dyn Fn(LongSynthesisProgress) + Send + Sync>,
 ) -> CoreResult<Vec<u8>> {
     let mut last_error = None;
+    on_progress(LongSynthesisProgress {
+        completed: 0,
+        total,
+        chunk_index: index + 1,
+        retry_count: 0,
+        state: "generating",
+    });
     for retry_count in 0..=LONG_TEXT_RETRIES {
         if retry_count > 0 {
             on_progress(LongSynthesisProgress {
@@ -1276,6 +1302,14 @@ mod tests {
             MAX_WORD_LOOP_TEXT_LENGTH,
         )
         .is_err());
+    }
+
+    #[test]
+    fn limits_generation_concurrency_to_one_through_five() {
+        assert_eq!(validate_generation_concurrency(1).unwrap(), 1);
+        assert_eq!(validate_generation_concurrency(5).unwrap(), 5);
+        assert!(validate_generation_concurrency(0).is_err());
+        assert!(validate_generation_concurrency(6).is_err());
     }
 
     #[test]

@@ -8,7 +8,6 @@ const MAX_LINES = 10_000;
 const MAX_LINE_CHARACTERS = 100;
 const MAX_VISIBLE_TASKS = 300;
 const MAX_VISIBLE_FAILURES = 300;
-const CONCURRENCY = 3;
 const RETRIES = 3;
 const DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural";
 
@@ -79,7 +78,7 @@ function exportName(format) {
   return `单词配音-${stamp}.${format}`;
 }
 
-export function initializeWordLoop(refreshIcons) {
+export function initializeWordLoop(refreshIcons, getConcurrency = () => 1) {
   const elements = {
     input: document.querySelector("#wordLoopInput"),
     lineCount: document.querySelector("#wordLoopLineCount"),
@@ -136,6 +135,7 @@ export function initializeWordLoop(refreshIcons) {
   let taskListSummary = null;
   let successCount = 0;
   let failedCount = 0;
+  let activeConcurrency = 1;
   let wavBytes = null;
   let mp3Bytes = null;
   let resultUrl = "";
@@ -570,7 +570,7 @@ export function initializeWordLoop(refreshIcons) {
     elements.progressBar.max = Math.max(1, total);
     elements.progressBar.value = successCount;
     elements.percent.textContent = `${percent.toFixed(2)}%`;
-    if (running) elements.progressText.textContent = `正在生成 ${successCount} / ${total} · 并发 ${CONCURRENCY}`;
+    if (running) elements.progressText.textContent = `正在生成 ${successCount} / ${total} · 并发 ${activeConcurrency}`;
   }
 
   function updateTasksForText(text, status, detail = "") {
@@ -628,6 +628,7 @@ export function initializeWordLoop(refreshIcons) {
     const pitch = clampNumber(elements.pitch, -100, 100);
     const volume = clampNumber(elements.volume, -100, 100);
     const voiceName = selectedVoiceName;
+    activeConcurrency = Math.min(5, Math.max(1, Math.round(Number(getConcurrency())) || 1));
     elements.repeatCount.value = repeatCount;
     elements.repeatGap.value = Math.round(repeatGapSeconds * 1000);
     elements.nextGap.value = Math.round(nextGapSeconds * 1000);
@@ -686,7 +687,7 @@ export function initializeWordLoop(refreshIcons) {
     };
 
     try {
-      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, uniqueTexts.length) }, worker));
+      await Promise.all(Array.from({ length: Math.min(activeConcurrency, uniqueTexts.length) }, worker));
       if (cancelled) {
         tasks.forEach((task, index) => {
           if (["pending", "running", "retrying"].includes(task.status)) {
@@ -719,7 +720,7 @@ export function initializeWordLoop(refreshIcons) {
             decoded.set(text, await decodeAudio(results.get(text), context));
           }
         };
-        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, uniqueTexts.length) }, decodeWorker));
+        await Promise.all(Array.from({ length: Math.min(activeConcurrency, uniqueTexts.length) }, decodeWorker));
       } finally {
         await context.close();
       }

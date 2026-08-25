@@ -20,6 +20,7 @@ import {
   Files,
   FolderOpen,
   FolderOutput,
+  Gauge,
   Globe2,
   Headphones,
   History,
@@ -77,6 +78,7 @@ const iconSet = {
   Files,
   FolderOpen,
   FolderOutput,
+  Gauge,
   Globe2,
   Headphones,
   History,
@@ -190,6 +192,10 @@ const elements = {
   zoomInButton: document.querySelector("#zoomInButton"),
   highContrastInput: document.querySelector("#highContrastInput"),
   reduceMotionInput: document.querySelector("#reduceMotionInput"),
+  generationConcurrencyInput: document.querySelector("#generationConcurrencyInput"),
+  generationConcurrencyOutput: document.querySelector("#generationConcurrencyOutput"),
+  concurrencyDownButton: document.querySelector("#concurrencyDownButton"),
+  concurrencyUpButton: document.querySelector("#concurrencyUpButton"),
   advancedSaveStatus: document.querySelector("#advancedSaveStatus"),
   workspaceView: document.querySelector("#workspaceTop"),
   voiceCatalogView: document.querySelector("#voiceCatalogView"),
@@ -315,6 +321,8 @@ let singleGenerationBusy = false;
 let longGenerationRunning = false;
 let longTask = null;
 let exportDirectory = "";
+let generationConcurrency = 1;
+let activeBatchConcurrency = 1;
 let isDesktopApp = false;
 let batchItemSequence = 0;
 let historyReloadTimer = null;
@@ -323,10 +331,9 @@ let historyRequestSequence = 0;
 const draftStorageKey = "voice-studio-draft-v1";
 const accessibilityStorageKey = "voice-studio-accessibility-v1";
 const exportDirectoryStorageKey = "voice-studio-export-directory-v1";
-const accessibilityDefaults = { zoom: 100, highContrast: false, reduceMotion: false };
+const accessibilityDefaults = { zoom: 100, highContrast: false, reduceMotion: false, concurrency: 1 };
 const maxTextLength = Number(document.body.dataset.maxText) || 10_000;
 const maxBatchFiles = 50;
-const batchConcurrency = 3;
 const maxCatalogPreviewLength = 20;
 const chineseCatalogPreviewText = "你好，欢迎试听这个音色。";
 const englishCatalogPreviewText = "Hello, voice test.";
@@ -1602,7 +1609,7 @@ function renderBatch() {
     elements.batchProgressText.textContent = batchRunning
       ? batchCancellationRequested
         ? `正在停止 · 已结束 ${completed}/${batchItems.length}`
-        : `处理中 ${completed}/${batchItems.length} · 并发 ${batchConcurrency}`
+        : `处理中 ${completed}/${batchItems.length} · 并发 ${activeBatchConcurrency}`
       : `完成 ${success} · 异常 ${failed} · 跳过 ${skipped} · 取消 ${cancelled}`;
   } else {
     elements.batchProgress.hidden = true;
@@ -1701,7 +1708,7 @@ function renderLongTask() {
   const completed = Math.min(total, Math.max(0, longTask.completed || 0));
   const percent = total ? (completed / total) * 100 : 0;
   elements.longTextFileName.textContent = longTask.name;
-  elements.longTextMeta.textContent = `${longTask.characterCount.toLocaleString("zh-CN")} 字 · ${total} 个分段 · ${longTask.encoding} · 并发 3`;
+  elements.longTextMeta.textContent = `${longTask.characterCount.toLocaleString("zh-CN")} 字 · ${total} 个分段 · ${longTask.encoding} · 并发 ${longTask.concurrency}`;
   elements.longTextProgressText.textContent = `已成功 ${completed} / ${total}`;
   elements.longTextPercent.textContent = `${percent.toFixed(2)}%`;
   elements.longTextProgressBar.max = Math.max(1, total);
@@ -1745,21 +1752,25 @@ async function importLongText() {
       filters: [{ name: "文本文件", extensions: ["txt", "text", "md", "markdown"] }],
     });
     if (!selected || Array.isArray(selected)) return;
+    console.info("[超长文字] 开始预检文件", { path: selected });
     const info = await invoke("inspect_long_text_file", { path: selected });
+    console.info("[超长文字] 文件预检完成", info);
+    const concurrency = generationConcurrency;
     const accepted = await askForConfirmation(
       "开始超长文字生成？",
-      `${info.name} 共 ${info.characterCount.toLocaleString("zh-CN")} 字，将拆分为 ${info.segmentCount} 段并以 3 个任务并发生成。过长可能导致生成失败，是否继续？`,
+      `${info.name} 共 ${info.characterCount.toLocaleString("zh-CN")} 字，将拆分为 ${info.segmentCount} 段并以 ${concurrency} 个任务并发生成。提高并发可能导致请求失败，是否继续？`,
       { acceptLabel: "继续生成", danger: false },
     );
     if (!accepted) return;
-    await startLongTextGeneration(selected, info);
+    await startLongTextGeneration(selected, info, concurrency);
   } catch (error) {
     const normalized = normalizedNativeError(error, "超长文本导入失败");
+    console.error("[超长文字] 文件预检或启动失败", normalized);
     showError(normalized.message, normalized.detail);
   }
 }
 
-async function startLongTextGeneration(path, info) {
+async function startLongTextGeneration(path, info, concurrency) {
   longGenerationRunning = true;
   const jobId = globalThis.crypto?.randomUUID
     ? globalThis.crypto.randomUUID().replaceAll("-", "")
@@ -1769,6 +1780,7 @@ async function startLongTextGeneration(path, info) {
     name: info.name,
     characterCount: info.characterCount,
     encoding: info.encoding,
+    concurrency,
     total: info.segmentCount,
     completed: 0,
     status: "running",
@@ -1782,6 +1794,7 @@ async function startLongTextGeneration(path, info) {
   addLongTaskLog(`任务开始：总字数 ${info.characterCount.toLocaleString("zh-CN")}`);
   addLongTaskLog(`已自动识别文本编码：${info.encoding}`);
   addLongTaskLog(`文本已分割为 ${info.segmentCount.toLocaleString("zh-CN")} 个文件，每个文件不超过 5000 字`);
+  addLongTaskLog(`本次任务并发数：${concurrency}`);
   showError();
   renderBatch();
   renderLongTask();
@@ -1790,8 +1803,12 @@ async function startLongTextGeneration(path, info) {
   const progress = new Channel();
   progress.onmessage = (message) => {
     if (!longTask || longTask.jobId !== jobId) return;
+    console.info("[超长文字] 任务进度", { jobId, ...message });
     if (message.total) longTask.total = message.total;
-    if (message.state === "completed") {
+    if (message.state === "generating") {
+      longTask.detail = `第 ${message.chunkIndex} 段生成中…`;
+      addLongTaskLog(`第 ${message.chunkIndex} 段生成中…`);
+    } else if (message.state === "completed") {
       longTask.completed = message.completed;
       longTask.detail = "正在生成";
       addLongTaskLog(`第 ${message.chunkIndex} 段生成成功，当前成功 ${message.completed}/${longTask.total}`, "success");
@@ -1811,12 +1828,21 @@ async function startLongTextGeneration(path, info) {
   };
 
   try {
+    console.info("[超长文字] 调用后台生成", {
+      jobId,
+      path,
+      concurrency,
+      segmentCount: info.segmentCount,
+      characterCount: info.characterCount,
+    });
     const record = await invoke("synthesize_long_text", {
       path,
       jobId,
+      concurrency,
       options: currentSynthesisOptions(""),
       onProgress: progress,
     });
+    console.info("[超长文字] 后台生成及合并完成", { jobId, recordId: record.id });
     longTask.recordId = record.id;
     longTask.completed = longTask.total;
     longTask.status = "success";
@@ -1838,6 +1864,7 @@ async function startLongTextGeneration(path, info) {
     }
   } catch (error) {
     const normalized = normalizedNativeError(error, "超长文字语音生成失败");
+    console.error("[超长文字] 后台生成失败", { jobId, error: normalized });
     const cancelled = /任务已取消|cancelled|canceled/i.test(normalized.detail);
     longTask.status = cancelled ? "cancelled" : "error";
     longTask.detail = cancelled ? "已停止" : "生成失败";
@@ -1930,6 +1957,7 @@ async function startBatch() {
   const queue = batchItems.filter((item) => ["pending", "error", "cancelled"].includes(item.status));
   if (queue.length === 0) return;
   batchRunning = true;
+  activeBatchConcurrency = generationConcurrency;
   batchCancellationRequested = false;
   batchRunId = globalThis.crypto?.randomUUID
     ? globalThis.crypto.randomUUID().replaceAll("-", "")
@@ -1955,7 +1983,7 @@ async function startBatch() {
     }
   }
   try {
-    await Promise.all(Array.from({ length: Math.min(batchConcurrency, queue.length) }, () => worker()));
+    await Promise.all(Array.from({ length: Math.min(activeBatchConcurrency, queue.length) }, () => worker()));
   } finally {
     try {
       await invoke("finish_batch", { batchId: currentBatchRunId });
@@ -2045,10 +2073,12 @@ function updateRangeOutputs() {
 
 function normalizeAccessibilitySettings(settings = {}) {
   const zoom = Math.min(150, Math.max(100, Math.round(Number(settings.zoom) / 5) * 5 || 100));
+  const concurrency = Math.min(5, Math.max(1, Math.round(Number(settings.concurrency)) || 1));
   return {
     zoom,
     highContrast: settings.highContrast === true,
     reduceMotion: settings.reduceMotion === true,
+    concurrency,
   };
 }
 
@@ -2057,6 +2087,7 @@ function accessibilitySettingsFromControls() {
     zoom: elements.interfaceZoomInput.value,
     highContrast: elements.highContrastInput.checked,
     reduceMotion: elements.reduceMotionInput.checked,
+    concurrency: elements.generationConcurrencyInput.value,
   });
 }
 
@@ -2075,6 +2106,12 @@ function applyAccessibilitySettings(settings) {
   elements.zoomInButton.disabled = normalized.zoom >= 150;
   elements.highContrastInput.checked = normalized.highContrast;
   elements.reduceMotionInput.checked = normalized.reduceMotion;
+  generationConcurrency = normalized.concurrency;
+  elements.generationConcurrencyInput.value = String(normalized.concurrency);
+  elements.generationConcurrencyInput.setAttribute("aria-valuetext", `${normalized.concurrency} 个任务`);
+  elements.generationConcurrencyOutput.textContent = `${normalized.concurrency} 个任务`;
+  elements.concurrencyDownButton.disabled = normalized.concurrency <= 1;
+  elements.concurrencyUpButton.disabled = normalized.concurrency >= 5;
   return normalized;
 }
 
@@ -2104,6 +2141,11 @@ function restoreAccessibilitySettings() {
 
 function adjustInterfaceZoom(amount) {
   elements.interfaceZoomInput.value = String(Number(elements.interfaceZoomInput.value) + amount);
+  persistAccessibilitySettings(accessibilitySettingsFromControls());
+}
+
+function adjustGenerationConcurrency(amount) {
+  elements.generationConcurrencyInput.value = String(Number(elements.generationConcurrencyInput.value) + amount);
   persistAccessibilitySettings(accessibilitySettingsFromControls());
 }
 
@@ -2199,6 +2241,9 @@ elements.clearExportDirectoryButton.addEventListener("click", () => persistExpor
 elements.interfaceZoomInput.addEventListener("input", () => persistAccessibilitySettings(accessibilitySettingsFromControls()));
 elements.zoomOutButton.addEventListener("click", () => adjustInterfaceZoom(-5));
 elements.zoomInButton.addEventListener("click", () => adjustInterfaceZoom(5));
+elements.generationConcurrencyInput.addEventListener("input", () => persistAccessibilitySettings(accessibilitySettingsFromControls()));
+elements.concurrencyDownButton.addEventListener("click", () => adjustGenerationConcurrency(-1));
+elements.concurrencyUpButton.addEventListener("click", () => adjustGenerationConcurrency(1));
 elements.highContrastInput.addEventListener("change", () => persistAccessibilitySettings(accessibilitySettingsFromControls()));
 elements.reduceMotionInput.addEventListener("change", () => persistAccessibilitySettings(accessibilitySettingsFromControls()));
 document.querySelector("#resetAdvancedButton").addEventListener("click", () => {
@@ -2301,7 +2346,7 @@ catalogLanguageControl = createUiSelect(elements.catalogLanguageSelect, renderVo
 localeControl.setOptions(languageOptions);
 localeControl.setValue("zh-CN");
 const audioInspection = initializeAudioInspection(refreshIcons);
-const wordLoop = initializeWordLoop(refreshIcons);
+const wordLoop = initializeWordLoop(refreshIcons, () => generationConcurrency);
 restoreAccessibilitySettings();
 restoreExportDirectory();
 restoreDraft();

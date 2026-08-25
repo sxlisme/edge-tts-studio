@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "声工坊",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "identifier": "com.sxlisme.voice-studio",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -19,7 +19,8 @@
         "minWidth": 900,
         "minHeight": 680,
         "center": true,
-        "resizable": true
+        "resizable": true,
+        "devtools": true
       }
     ],
     "security": {

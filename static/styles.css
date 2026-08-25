@@ -536,6 +536,9 @@ pre { max-height: 330px; overflow: auto; margin: 0; padding: 16px; border-radius
 .advanced-section-heading output { min-width: 48px; color: var(--accent); font-size: 14px; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
 .zoom-control { margin-top: 15px; display: grid; grid-template-columns: 34px minmax(0, 1fr) 34px; align-items: center; gap: 9px; }
 .zoom-step-button { border: 1px solid var(--border); background: var(--surface-soft); }
+.concurrency-control { margin-top: 12px; }
+.concurrency-scale { margin: 6px 43px 0; display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 9px; }
+.concurrency-scale span:last-child { color: var(--danger); text-align: right; }
 .accessibility-options { padding-top: 5px; }
 .setting-toggle { min-height: 62px; display: grid; grid-template-columns: 38px minmax(0, 1fr) 42px; align-items: center; gap: 10px; border-bottom: 1px solid var(--border-soft); cursor: pointer; }
 .setting-toggle:last-child { border-bottom: 0; }
