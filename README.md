@@ -68,6 +68,16 @@
 2. macOS 下载 `.dmg`，Windows 日常安装优先下载 `.exe`。
 3. 没有 Release 时，可以在 [Actions](https://github.com/sxlisme/edge-tts-studio/actions) 中打开最近一次成功的 `Desktop packages` 工作流，从 Artifacts 下载对应平台制品。
 
+远程构建的安装包按“平台_产品_版本_其他信息.后缀”命名：
+
+| 平台 | Release 页面显示名称 | 实际下载文件名 |
+| --- | --- | --- |
+| macOS | `苹果电脑_声工坊_{version}_通用版.dmg` | `macOS_VoiceStudio_{version}_universal.dmg` |
+| Windows NSIS | `windows_声工坊_{version}_x64安装版.exe` | `Windows_VoiceStudio_{version}_x64_setup.exe` |
+| Windows MSI | `windows_声工坊_{version}_x64中文版.msi` | `Windows_VoiceStudio_{version}_x64_zh-CN.msi` |
+
+GitHub 会清理 Release 真实附件名中的中文字符，因此页面使用中文标签方便识别，实际下载文件使用稳定的 ASCII 名称，避免文件名被替换成下划线。表格中的版本号会随发布版本自动变化。
+
 ### macOS
 
 1. 打开下载的 DMG。
