@@ -141,7 +141,7 @@ Word 或 PDF 文件若包含图片、表格等复杂内容，文本提取可能�
 
 Android 端启动后只显示文字转语音的核心功能：输入文本、选择语言和音色、调整语速/音调/音量、生成试听以及导出 MP3。导出时使用 Android 系统文件选择器，由用户决定保存位置。
 
-版本标签会触发 GitHub Actions 构建通用 debug APK，并将可安装文件上传到对应 GitHub Release。该 APK 使用 Android 系统调试签名，适合直接安装测试；发布到应用商店前仍需配置项目长期持有的正式签名密钥。
+版本标签会触发 GitHub Actions 构建适用于当前主流 Android 真机的 `arm64-v8a` debug APK，并将可安装文件上传到对应 GitHub Release。该 APK 使用 Android 系统调试签名，适合直接安装测试；发布到应用商店前仍需配置项目长期持有的正式签名密钥。
 
 ### 生成单词配音
 

@@ -32,7 +32,7 @@ jobs:
           packages: ""
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
@@ -44,8 +44,8 @@ jobs:
           echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
       - run: npm ci
       - run: npm run tauri -- android init --ci
-      - name: Build installable universal APK
-        run: npm run tauri -- android build --apk --debug --ci
+      - name: Build installable arm64 APK
+        run: npm run tauri -- android build --target aarch64 --apk --debug --ci
       - name: Normalize APK filename
         shell: bash
         run: |
@@ -53,7 +53,7 @@ jobs:
           apk_path=$(find src-tauri/gen/android/app/build/outputs/apk -type f -name '*.apk' -print -quit)
           test -n "$apk_path"
           mkdir -p release-files
-          cp "$apk_path" "release-files/Android_VoiceStudio_${version}_universal-debug.apk"
+          cp "$apk_path" "release-files/Android_VoiceStudio_${version}_arm64-v8a-debug.apk"
       - uses: actions/upload-artifact@v4
         with:
           name: Android-VoiceStudio-${{ github.ref_name }}
