@@ -64,9 +64,10 @@ async fn synthesize_word_loop_item(
 async fn synthesize_batch_item(
     core: State<'_, Arc<AppCore>>,
     batch_id: String,
+    source_name: String,
     options: SynthesisOptions,
 ) -> Result<HistoryRecord, String> {
-    core.synthesize_batch_and_store(&batch_id, options)
+    core.synthesize_batch_and_store(&batch_id, source_name, options)
         .await
         .map(|result| result.record)
         .map_err(|error| error.to_string())
@@ -124,6 +125,7 @@ async fn synthesize_long_text(
     core.synthesize_long_and_store(
         &job_id,
         options,
+        file.info.name,
         concurrency,
         Arc::new(move |progress| {
             let _ = on_progress.send(progress);

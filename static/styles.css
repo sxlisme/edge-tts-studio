@@ -89,6 +89,8 @@ body.sidebar-collapsed .menu-button { display: grid !important; border: 1px soli
 .input-footer { min-height: 38px; margin-top: 10px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .input-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .draft-status { color: var(--success); font-size: 11px; }
+.document-import-warning { margin: 7px 0 0; display: flex; align-items: flex-start; gap: 7px; color: #8a5b08; font-size: 9px; line-height: 1.55; overflow-wrap: anywhere; }
+.document-import-warning svg { width: 14px; height: 14px; flex: 0 0 auto; margin-top: 1px; }
 
 .voice-library { margin-top: 7px; }
 .field-label, .range-field > span { color: #40495c; font-size: 12px; font-weight: 650; }
@@ -512,6 +514,15 @@ body.catalog-view .workspace-top-action, body.inspection-view .workspace-top-act
 .composition-status.is-error { color: var(--danger); }
 
 .mobile-editor-tabs, .mobile-bottom-nav { display: none; }
+.save-notification { position: fixed; top: 94px; right: 22px; z-index: 120; width: min(440px, calc(100vw - 32px)); min-height: 76px; padding: 14px 12px 14px 14px; display: grid; grid-template-columns: 36px minmax(0, 1fr) 32px; align-items: start; gap: 11px; border: 1px solid #b9dfcf; border-radius: 8px; color: var(--text); background: rgba(255, 255, 255, 0.98); box-shadow: var(--shadow-popover); animation: save-notification-in 180ms ease-out both; }
+.save-notification-icon { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 50%; color: #187052; background: #e7f5f0; }
+.save-notification-icon svg { width: 19px; height: 19px; stroke-width: 2.5; }
+.save-notification-copy { min-width: 0; padding-top: 1px; }
+.save-notification-copy strong { display: block; font-size: 12px; line-height: 1.45; }
+.save-notification-copy p { margin: 4px 0 0; color: var(--muted); font-size: 10px; line-height: 1.55; overflow-wrap: anywhere; }
+.save-notification-copy code { color: #405064; font-family: "SF Mono", ui-monospace, monospace; font-size: 9px; }
+.save-notification-close { width: 30px; height: 30px; }
+.save-notification-close svg { width: 15px; height: 15px; }
 dialog { width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 40px); padding: 25px; border: 1px solid rgba(23, 32, 51, 0.1); border-radius: 8px; color: var(--text); background: rgba(255, 255, 255, 0.98); box-shadow: 0 26px 80px rgba(18, 28, 48, 0.24); }
 dialog::backdrop { background: rgba(8, 18, 36, 0.36); backdrop-filter: blur(3px); }
 .dialog-heading { display: flex; justify-content: space-between; align-items: flex-start; }
@@ -565,6 +576,39 @@ pre { max-height: 330px; overflow: auto; margin: 0; padding: 16px; border-radius
 
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes sound-wave { 0%, 100% { height: 8px; opacity: 0.45; } 50% { height: 32px; opacity: 1; } }
+@keyframes save-notification-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+
+body.mobile-app { min-width: 0; padding: 0; background: var(--page); }
+body.mobile-app .app-frame { min-height: 100vh; min-height: 100dvh; grid-template-columns: 1fr; }
+body.mobile-app .sidebar,
+body.mobile-app .sidebar-backdrop,
+body.mobile-app .menu-button,
+body.mobile-app .project-summary,
+body.mobile-app .topbar-actions,
+body.mobile-app .mobile-editor-tabs,
+body.mobile-app .input-footer,
+body.mobile-app .document-import-warning,
+body.mobile-app .voice-library,
+body.mobile-app .voice-summary,
+body.mobile-app .batch-panel,
+body.mobile-app .long-text-panel,
+body.mobile-app .history-panel,
+body.mobile-app .mobile-bottom-nav,
+body.mobile-app .voice-catalog-view,
+body.mobile-app .word-loop-view,
+body.mobile-app .audio-inspection-view { display: none !important; }
+body.mobile-app .topbar { min-height: calc(58px + env(safe-area-inset-top)); padding: calc(10px + env(safe-area-inset-top)) 16px 10px; flex-wrap: nowrap; }
+body.mobile-app .mobile-brand { display: flex !important; }
+body.mobile-app .content { width: 100%; max-width: 680px; padding: 14px 14px calc(28px + env(safe-area-inset-bottom)); }
+body.mobile-app .creator-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+body.mobile-app .input-panel,
+body.mobile-app .settings-panel { display: block; border-radius: 8px; }
+body.mobile-app .input-panel textarea { min-height: 190px; }
+body.mobile-app .settings-grid { grid-template-columns: 1fr; }
+body.mobile-app .controls-grid { margin-top: 16px; }
+body.mobile-app .range-field { grid-template-columns: 70px minmax(0, 1fr); }
+body.mobile-app .player-panel { margin-top: 12px; }
+body.mobile-app .save-notification { top: calc(66px + env(safe-area-inset-top)); }
 
 @media (max-width: 1240px) {
   .app-frame { grid-template-columns: 1fr; }
@@ -725,6 +769,7 @@ pre { max-height: 330px; overflow: auto; margin: 0; padding: 16px; border-radius
   pre { font-size: 9px; }
   .export-directory-control { grid-template-columns: minmax(0, 1fr) 34px; }
   .export-directory-control .button { grid-column: 1 / -1; }
+  .save-notification { top: 76px; right: 12px; width: calc(100vw - 24px); }
 }
 
 @media (max-width: 420px) {

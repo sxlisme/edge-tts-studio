@@ -1,6 +1,6 @@
 [package]
 name = "voice-studio"
-version = "1.4.3"
+version = "1.5.0"
 description = "A compact cross-platform text-to-speech studio"
 authors = ["sxlisme <blackberrysxl@163.com>"]
 edition = "2021"
@@ -19,7 +19,9 @@ chrono = { version = "0.4", features = ["serde"] }
 encoding_rs = "0.8"
 futures-util = "0.3"
 msedge-tts = { version = "=0.4.0", default-features = false, features = ["tokio-runtime"] }
+pdf-extract = "0.12"
 quick-xml = "0.38"
+rwml = "=0.1.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sysinfo = "0.37"

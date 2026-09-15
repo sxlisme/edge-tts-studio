@@ -33,7 +33,8 @@ const MAX_GENERATION_CONCURRENCY: usize = 5;
 const LONG_TEXT_RETRIES: usize = 3;
 const MAX_HISTORY_ITEMS: usize = 50;
 const MAX_BATCH_FILES: usize = 50;
-const MAX_TEXT_FILE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_PLAIN_TEXT_FILE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_DOCUMENT_FILE_BYTES: u64 = 20 * 1024 * 1024;
 const VOICE_CACHE_DURATION: Duration = Duration::from_secs(6 * 60 * 60);
 const VOICE_TIMEOUT: Duration = Duration::from_secs(30);
 const SYNTHESIS_TIMEOUT: Duration = Duration::from_secs(180);
@@ -107,6 +108,8 @@ pub struct SynthesisOptions {
 pub struct HistoryRecord {
     pub id: String,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_name: Option<String>,
     pub text: String,
     pub voice: String,
     pub voice_name: String,
@@ -324,13 +327,14 @@ impl AppCore {
         &self,
         options: SynthesisOptions,
     ) -> CoreResult<StoredSynthesis> {
-        self.synthesize_and_store_with_cancellation(options, None)
+        self.synthesize_and_store_with_cancellation(options, None, None)
             .await
     }
 
     pub async fn synthesize_batch_and_store(
         &self,
         batch_id: &str,
+        source_name: String,
         options: SynthesisOptions,
     ) -> CoreResult<StoredSynthesis> {
         validate_batch_id(batch_id)?;
@@ -341,14 +345,19 @@ impl AppCore {
                 .or_default()
                 .clone()
         };
-        self.synthesize_and_store_with_cancellation(options, Some(&cancellation))
-            .await
+        self.synthesize_and_store_with_cancellation(
+            options,
+            Some(&cancellation),
+            normalize_source_name(&source_name),
+        )
+        .await
     }
 
     pub async fn synthesize_long_and_store(
         &self,
         batch_id: &str,
         options: SynthesisOptions,
+        source_name: String,
         concurrency: usize,
         on_progress: std::sync::Arc<dyn Fn(LongSynthesisProgress) + Send + Sync>,
     ) -> CoreResult<StoredSynthesis> {
@@ -368,6 +377,7 @@ impl AppCore {
         let result = self
             .synthesize_long_inner(
                 options,
+                normalize_source_name(&source_name),
                 concurrency,
                 &temporary_directory,
                 &cancellation,
@@ -382,6 +392,7 @@ impl AppCore {
     async fn synthesize_long_inner(
         &self,
         options: SynthesisOptions,
+        source_name: Option<String>,
         concurrency: usize,
         temporary_directory: &Path,
         cancellation: &CancellationToken,
@@ -457,7 +468,9 @@ impl AppCore {
         tokio::fs::rename(&merged_path, &audio_path).await?;
 
         let size = tokio::fs::metadata(&audio_path).await?.len() as usize;
-        let record = self.history_record(&record_id, &validated, size).await;
+        let record = self
+            .history_record(&record_id, &validated, size, source_name)
+            .await;
         if let Err(error) = self.store_existing_history_audio(&record).await {
             remove_file_if_exists(&audio_path).await?;
             return Err(error);
@@ -504,6 +517,7 @@ impl AppCore {
         &self,
         options: SynthesisOptions,
         cancellation: Option<&CancellationToken>,
+        source_name: Option<String>,
     ) -> CoreResult<StoredSynthesis> {
         let validated = ValidatedOptions::try_from(options)?;
         let audio = if let Some(cancellation) = cancellation {
@@ -524,7 +538,7 @@ impl AppCore {
 
         let record_id = Uuid::new_v4().simple().to_string();
         let record = self
-            .history_record(&record_id, &validated, audio.len())
+            .history_record(&record_id, &validated, audio.len(), source_name)
             .await;
         self.store_history_audio(&record, &audio).await?;
         Ok(StoredSynthesis { record, audio })
@@ -535,6 +549,7 @@ impl AppCore {
         id: &str,
         validated: &ValidatedOptions,
         size: usize,
+        source_name: Option<String>,
     ) -> HistoryRecord {
         let voice_gender = {
             let cache = self.voice_cache.read().await;
@@ -548,6 +563,7 @@ impl AppCore {
         HistoryRecord {
             id: id.to_owned(),
             created_at: Local::now().to_rfc3339_opts(SecondsFormat::Secs, false),
+            source_name,
             text: validated.text.clone(),
             voice: validated.voice.clone(),
             voice_name: voice_display_name(&validated.voice),
@@ -643,16 +659,21 @@ impl AppCore {
         let _guard = self.export_lock.lock().await;
         let directory = validate_export_directory(directory).await?;
 
-        let (_, audio) = self.history_audio(id).await?;
+        let (record, audio) = self.history_audio(id).await?;
         let timestamp = Local::now().format("%Y%m%d-%H%M%S-%3f").to_string();
-        let mut attempt = 1;
+        let base_name = record
+            .source_name
+            .as_deref()
+            .and_then(source_file_stem)
+            .unwrap_or_else(|| format!("voice-studio-{timestamp}"));
+        let mut duplicate_index = 0;
         loop {
-            let suffix = if attempt == 1 {
+            let suffix = if duplicate_index == 0 {
                 String::new()
             } else {
-                format!("-{attempt}")
+                format!("-{duplicate_index}")
             };
-            let destination = directory.join(format!("voice-studio-{timestamp}{suffix}.mp3"));
+            let destination = directory.join(format!("{base_name}{suffix}.mp3"));
             match tokio::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -665,7 +686,7 @@ impl AppCore {
                     return Ok(destination);
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    attempt += 1;
+                    duplicate_index += 1;
                 }
                 Err(error) => return Err(CoreError::Io(error)),
             }
@@ -731,6 +752,36 @@ impl AppCore {
     }
 }
 
+fn normalize_source_name(name: &str) -> Option<String> {
+    Path::new(name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn source_file_stem(name: &str) -> Option<String> {
+    let stem = Path::new(name).file_stem()?.to_str()?.trim();
+    let sanitized: String = stem
+        .chars()
+        .map(|character| {
+            if character.is_control()
+                || matches!(
+                    character,
+                    '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+                )
+            {
+                '-'
+            } else {
+                character
+            }
+        })
+        .collect();
+    let sanitized = sanitized.trim_matches([' ', '.']);
+    (!sanitized.is_empty()).then(|| sanitized.to_owned())
+}
+
 pub async fn validate_export_directory(directory: &Path) -> CoreResult<PathBuf> {
     let metadata = tokio::fs::metadata(directory).await.map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -770,20 +821,37 @@ pub async fn read_text_files(paths: Vec<String>) -> CoreResult<Vec<BatchTextFile
             .and_then(|value| value.to_str())
             .unwrap_or_default()
             .to_ascii_lowercase();
-        if !matches!(extension.as_str(), "txt" | "text" | "md" | "markdown") {
-            return Err(CoreError::Validation(format!("{name} 不是支持的文本文件")));
+        if !matches!(
+            extension.as_str(),
+            "txt" | "text" | "md" | "markdown" | "doc" | "docx" | "pdf"
+        ) {
+            return Err(CoreError::Validation(format!("{name} 不是支持的文档文件")));
         }
 
         let metadata = tokio::fs::metadata(&path).await?;
         if !metadata.is_file() {
             return Err(CoreError::Validation(format!("{name} 不是普通文件")));
         }
-        if metadata.len() > MAX_TEXT_FILE_BYTES {
-            return Err(CoreError::Validation(format!("{name} 超过 2 MB，无法读取")));
+        let max_file_bytes = if matches!(extension.as_str(), "doc" | "docx" | "pdf") {
+            MAX_DOCUMENT_FILE_BYTES
+        } else {
+            MAX_PLAIN_TEXT_FILE_BYTES
+        };
+        if metadata.len() > max_file_bytes {
+            return Err(CoreError::Validation(format!(
+                "{name} 超过 {} MB，无法读取",
+                max_file_bytes / 1024 / 1024
+            )));
         }
 
         let data = tokio::fs::read(&path).await?;
-        let (text, encoding) = decode_text_data(&data, &name)?;
+        let decode_name = name.clone();
+        let decode_extension = extension.clone();
+        let (text, encoding) = tokio::task::spawn_blocking(move || {
+            extract_file_text(&data, &decode_extension, &decode_name)
+        })
+        .await
+        .map_err(|error| CoreError::Validation(format!("{name} 文本解析任务失败：{error}")))??;
         files.push(BatchTextFile {
             character_count: text.chars().count(),
             name,
@@ -792,6 +860,36 @@ pub async fn read_text_files(paths: Vec<String>) -> CoreResult<Vec<BatchTextFile
         });
     }
     Ok(files)
+}
+
+fn extract_file_text(data: &[u8], extension: &str, name: &str) -> CoreResult<(String, String)> {
+    let (text, format) = match extension {
+        "doc" | "docx" => {
+            let text = rwml::extract_text(data).map_err(|error| {
+                CoreError::Validation(format!(
+                    "{name} 的 Word 文本提取失败：{error}。请尝试另存为 TXT 后校验内容"
+                ))
+            })?;
+            (text, extension.to_ascii_uppercase())
+        }
+        "pdf" => {
+            let text = pdf_extract::extract_text_from_mem(data).map_err(|error| {
+                CoreError::Validation(format!(
+                    "{name} 的 PDF 文本提取失败：{error}。请尝试转换为 TXT 后校验内容"
+                ))
+            })?;
+            (text, "PDF".to_owned())
+        }
+        _ => return decode_text_data(data, name),
+    };
+
+    Ok((normalize_document_text(text), format))
+}
+
+fn normalize_document_text(text: String) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\u{000c}', "\n")
 }
 
 fn decode_text_data(data: &[u8], name: &str) -> CoreResult<(String, String)> {
@@ -1241,6 +1339,7 @@ mod tests {
         HistoryRecord {
             id: format!("{index:032x}"),
             created_at: "2026-08-18T12:00:00+08:00".to_owned(),
+            source_name: None,
             text: format!("测试记录 {index}"),
             voice: DEFAULT_VOICE.to_owned(),
             voice_name: "晓晓".to_owned(),
@@ -1434,6 +1533,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn extracts_text_from_docx_files() {
+        let directory = tempfile::tempdir().expect("temporary directory should be available");
+        let path = directory.path().join("article.docx");
+        let document = rwml::DocBuilder::new()
+            .paragraph("DOCX 文档标题")
+            .paragraph("这是需要生成语音的正文。")
+            .build();
+        tokio::fs::write(&path, rwml::write_docx(&document))
+            .await
+            .expect("docx fixture should be written");
+
+        let files = read_text_files(vec![path.to_string_lossy().into_owned()])
+            .await
+            .expect("docx file should load");
+
+        assert_eq!(files[0].encoding, "DOCX");
+        assert!(files[0].text.contains("DOCX 文档标题"));
+        assert!(files[0].text.contains("这是需要生成语音的正文。"));
+    }
+
+    #[tokio::test]
+    async fn extracts_text_from_pdf_files() {
+        let directory = tempfile::tempdir().expect("temporary directory should be available");
+        let path = directory.path().join("article.pdf");
+        tokio::fs::write(&path, minimal_pdf("PDF text extraction works."))
+            .await
+            .expect("pdf fixture should be written");
+
+        let files = read_text_files(vec![path.to_string_lossy().into_owned()])
+            .await
+            .expect("pdf file should load");
+
+        assert_eq!(files[0].encoding, "PDF");
+        assert!(files[0].text.contains("PDF text extraction works."));
+    }
+
+    fn minimal_pdf(text: &str) -> Vec<u8> {
+        let content = format!("BT /F1 12 Tf 72 720 Td ({text}) Tj ET");
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".to_owned(),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+            format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()),
+        ];
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::with_capacity(objects.len());
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
+        }
+        let xref_offset = pdf.len();
+        pdf.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+        );
+        for offset in offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
+        pdf
+    }
+
+    #[tokio::test]
     async fn exports_to_an_existing_directory_without_overwriting() {
         let data_directory = tempfile::tempdir().expect("data directory should be available");
         let export_directory = tempfile::tempdir().expect("export directory should be available");
@@ -1453,6 +1621,46 @@ mod tests {
             .file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.starts_with("voice-studio-") && name.ends_with(".mp3")));
+    }
+
+    #[tokio::test]
+    async fn exports_imported_files_with_numbered_duplicate_names() {
+        let data_directory = tempfile::tempdir().expect("data directory should be available");
+        let export_directory = tempfile::tempdir().expect("export directory should be available");
+        let core = AppCore::new(data_directory.path().to_owned());
+        let mut record = history_record(2);
+        record.source_name = Some("课程讲义.docx".to_owned());
+        core.store_history_audio(&record, b"audio")
+            .await
+            .expect("history item should be stored");
+
+        let first = core
+            .export_history_to_directory(&record.id, export_directory.path())
+            .await
+            .expect("first audio should be exported");
+        let second = core
+            .export_history_to_directory(&record.id, export_directory.path())
+            .await
+            .expect("duplicate audio should be exported");
+        let third = core
+            .export_history_to_directory(&record.id, export_directory.path())
+            .await
+            .expect("second duplicate audio should be exported");
+
+        assert_eq!(first.file_name().unwrap(), "课程讲义.mp3");
+        assert_eq!(second.file_name().unwrap(), "课程讲义-1.mp3");
+        assert_eq!(third.file_name().unwrap(), "课程讲义-2.mp3");
+    }
+
+    #[test]
+    fn reads_history_records_saved_before_source_names_were_added() {
+        let record = history_record(3);
+        let json = serde_json::to_string(&record).expect("history record should serialize");
+        assert!(!json.contains("sourceName"));
+
+        let decoded: HistoryRecord =
+            serde_json::from_str(&json).expect("legacy history record should deserialize");
+        assert_eq!(decoded.source_name, None);
     }
 
     #[tokio::test]
@@ -1481,7 +1689,11 @@ mod tests {
 
         assert!(core.cancel_batch(batch_id).await.unwrap());
         let result = core
-            .synthesize_batch_and_store(batch_id, synthesis_options("不会发起网络请求"))
+            .synthesize_batch_and_store(
+                batch_id,
+                "测试文档.txt".to_owned(),
+                synthesis_options("不会发起网络请求"),
+            )
             .await;
         assert!(matches!(result, Err(CoreError::Cancelled)));
 

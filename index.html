@@ -79,6 +79,7 @@
                 </div>
                 <span class="draft-status" id="draftStatus"></span>
               </div>
+              <p class="document-import-warning"><i data-lucide="triangle-alert"></i><span>DOC、DOCX、PDF 文件若含图片、表格等内容，文本提取可能不完整，转换音频可能异常。可手动转为 TXT，校验内容后再生成。</span></p>
             </section>
 
             <section class="tool-panel settings-panel" id="settingsPanel" aria-labelledby="settingsTitle">
@@ -462,6 +463,15 @@ orange</textarea>
       </div>
     </div>
 
+    <aside class="save-notification" id="saveNotification" role="status" aria-live="polite" aria-atomic="true" hidden>
+      <span class="save-notification-icon" aria-hidden="true"><i data-lucide="check"></i></span>
+      <div class="save-notification-copy">
+        <strong>保存成功</strong>
+        <p><span>保存位置：</span><code id="saveNotificationPath"></code></p>
+      </div>
+      <button class="icon-button save-notification-close" id="closeSaveNotificationButton" type="button" aria-label="关闭保存成功提示"><i data-lucide="x"></i></button>
+    </aside>
+
     <dialog id="apiDialog">
       <div class="dialog-heading"><div><span class="panel-kicker">HTTP API</span><h2>生成语音</h2></div><button class="icon-button" id="closeApiButton" type="button" aria-label="关闭"><i data-lucide="x"></i></button></div>
       <div class="endpoint"><span>POST</span><code>/api/synthesize</code></div>
@@ -533,7 +543,7 @@ orange</textarea>
       <section class="advanced-section export-directory-setting" id="desktopExportSection" aria-labelledby="exportDirectoryTitle" hidden>
         <div class="advanced-section-heading compact-heading">
           <span class="advanced-section-icon"><i data-lucide="folder-output"></i></span>
-          <div><h3 id="exportDirectoryTitle">默认导出文件夹</h3><p>下载与批量结果按生成时间命名</p></div>
+          <div><h3 id="exportDirectoryTitle">默认导出文件夹</h3><p>导入文件沿用原名，粘贴文本按生成时间命名</p></div>
         </div>
         <div class="export-directory-control">
           <span id="exportDirectoryPath">尚未设置</span>

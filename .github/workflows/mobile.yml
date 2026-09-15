@@ -1,7 +1,13 @@
-name: Mobile packages
+name: Android package
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
 
 jobs:
   android:
@@ -31,42 +37,31 @@ jobs:
           echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
       - run: npm ci
       - run: npm run tauri -- android init --ci
-      - run: npm run tauri -- android build --apk --aab --ci
-      - uses: actions/upload-artifact@v4
-        with:
-          name: 声工坊-Android
-          path: |
-            src-tauri/gen/android/app/build/outputs/apk/**/*.apk
-            src-tauri/gen/android/app/build/outputs/bundle/**/*.aab
-          if-no-files-found: error
-
-  ios-simulator:
-    runs-on: macos-14
-    env:
-      APPLE_SIGNING_IDENTITY: "-"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-ios-sim,x86_64-apple-ios
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-      - run: npm ci
-      - run: npm run tauri -- ios init --ci
-      - run: npm run tauri -- ios build --target aarch64-sim x86_64 --debug --no-sign --ci
-      - name: Archive simulator application
+      - name: Build installable universal APK
+        run: npm run tauri -- android build --apk --debug --ci
+      - name: Normalize APK filename
         shell: bash
         run: |
-          app_path="$(find src-tauri/gen/apple -type d -name '*.app' -print -quit)"
-          test -n "$app_path"
-          ditto -c -k --sequesterRsrc --keepParent "$app_path" ios-simulator-app.zip
+          version=$(node -p "require('./package.json').version")
+          apk_path=$(find src-tauri/gen/android/app/build/outputs/apk -type f -name '*.apk' -print -quit)
+          test -n "$apk_path"
+          mkdir -p release-files
+          cp "$apk_path" "release-files/Android_VoiceStudio_${version}_universal-debug.apk"
       - uses: actions/upload-artifact@v4
         with:
-          name: 声工坊-iOS-simulator
-          path: ios-simulator-app.zip
+          name: Android-VoiceStudio-${{ github.ref_name }}
+          path: release-files/*.apk
           if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release-artifacts/**/*.apk
+          generate_release_notes: true

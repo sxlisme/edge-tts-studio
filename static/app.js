@@ -1,6 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { writeFile } from "@tauri-apps/plugin-fs";
 import { initializeAudioInspection } from "./audio-inspection.js";
 import { initializeWordLoop } from "./word-loop.js";
 import {
@@ -157,6 +158,9 @@ const elements = {
   historyEmpty: document.querySelector("#historyEmpty"),
   historyCount: document.querySelector("#historyCount"),
   clearHistoryButton: document.querySelector("#clearHistoryButton"),
+  saveNotification: document.querySelector("#saveNotification"),
+  saveNotificationPath: document.querySelector("#saveNotificationPath"),
+  closeSaveNotificationButton: document.querySelector("#closeSaveNotificationButton"),
   importFilesButton: document.querySelector("#importFilesButton"),
   longTextButton: document.querySelector("#longTextButton"),
   longTextPanel: document.querySelector("#longTextPanel"),
@@ -327,6 +331,7 @@ let isDesktopApp = false;
 let batchItemSequence = 0;
 let historyReloadTimer = null;
 let historyRequestSequence = 0;
+let saveNotificationTimer = null;
 
 const draftStorageKey = "voice-studio-draft-v1";
 const accessibilityStorageKey = "voice-studio-accessibility-v1";
@@ -337,6 +342,9 @@ const maxBatchFiles = 50;
 const maxCatalogPreviewLength = 20;
 const chineseCatalogPreviewText = "你好，欢迎试听这个音色。";
 const englishCatalogPreviewText = "Hello, voice test.";
+const supportedDocumentExtensions = ["txt", "text", "md", "markdown", "doc", "docx", "pdf"];
+const richDocumentExtensions = new Set(["doc", "docx", "pdf"]);
+const richDocumentWarning = "若文件中含图片、表格等内容，文本提取可能不完整，转换音频可能异常。建议手动转换为 TXT 并校验内容后再生成。";
 
 function signedValue(value, suffix) {
   const number = Number(value);
@@ -387,6 +395,19 @@ function showError(message = "", detail = "") {
   }
 }
 
+function closeSaveNotification() {
+  clearTimeout(saveNotificationTimer);
+  saveNotificationTimer = null;
+  elements.saveNotification.hidden = true;
+}
+
+function showSaveNotification(destination) {
+  clearTimeout(saveNotificationTimer);
+  elements.saveNotificationPath.textContent = destination;
+  elements.saveNotification.hidden = false;
+  saveNotificationTimer = setTimeout(closeSaveNotification, 5_000);
+}
+
 function normalizedNativeError(error, fallbackMessage = "操作失败") {
   const detail = error instanceof Error ? error.message : String(error || fallbackMessage);
   const isOnlineFailure = /在线语音服务|WebSocket|connection|connect|timed out|timeout/i.test(detail);
@@ -396,11 +417,34 @@ function normalizedNativeError(error, fallbackMessage = "操作失败") {
   };
 }
 
-function blobFromBase64(value, type = "audio/mpeg") {
+function bytesFromBase64(value) {
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  return new Blob([bytes], { type });
+  return bytes;
+}
+
+function blobFromBase64(value, type = "audio/mpeg") {
+  return new Blob([bytesFromBase64(value)], { type });
+}
+
+function fileExtension(path) {
+  return String(path).split(/[\\/]/).pop()?.split(".").pop()?.toLocaleLowerCase("en-US") || "";
+}
+
+function isRichDocument(path) {
+  return richDocumentExtensions.has(fileExtension(path));
+}
+
+function sourceAudioFileName(sourceName) {
+  if (!sourceName) return "";
+  const fileName = String(sourceName).split(/[\\/]/).pop() || "";
+  const extensionIndex = fileName.lastIndexOf(".");
+  const stem = (extensionIndex > 0 ? fileName.slice(0, extensionIndex) : fileName)
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-")
+    .replace(/[. ]+$/g, "")
+    .trim();
+  return stem ? `${stem}.mp3` : "";
 }
 
 function updateCharacterCount() {
@@ -1363,17 +1407,25 @@ async function downloadHistory(id) {
   if (!record) return;
   const voiceName = (record.voiceName || "audio").replace(/[\\/:*?"<>|]/g, "-");
   const timestamp = formatDownloadTimestamp(new Date(record.createdAt));
+  const importedFileName = sourceAudioFileName(record.sourceName);
   try {
     if (isDesktopApp && exportDirectory) {
-      await exportRecordToConfiguredDirectory(id);
+      const destination = await exportRecordToConfiguredDirectory(id);
+      showSaveNotification(destination);
       return;
     }
     const destination = await save({
-      defaultPath: `voice-studio-${voiceName}-${timestamp}.mp3`,
+      defaultPath: importedFileName || `voice-studio-${voiceName}-${timestamp}.mp3`,
       filters: [{ name: "MP3 音频", extensions: ["mp3"] }],
     });
     if (!destination) return;
-    await invoke("export_history_audio", { id, destination });
+    if (isDesktopApp) {
+      await invoke("export_history_audio", { id, destination });
+    } else {
+      const payload = await invoke("read_history_audio", { id });
+      await writeFile(destination, bytesFromBase64(payload.audioBase64));
+    }
+    showSaveNotification(destination);
   } catch (error) {
     const normalized = normalizedNativeError(error, "导出音频失败");
     showError(normalized.message, normalized.detail);
@@ -1526,6 +1578,7 @@ async function loadAppInformation() {
     elements.applicationVersion.textContent = information.appVersion;
     for (const badge of elements.appVersionBadges) badge.textContent = information.appVersion;
     isDesktopApp = information.desktop === true;
+    document.body.classList.toggle("mobile-app", !isDesktopApp);
     elements.desktopExportSection.hidden = !isDesktopApp;
     if (isDesktopApp && exportDirectory) {
       try {
@@ -1537,9 +1590,11 @@ async function loadAppInformation() {
       }
     }
   } catch (_) {
+    isDesktopApp = !/Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    document.body.classList.toggle("mobile-app", !isDesktopApp);
     elements.systemVersion.textContent = navigator.platform || "当前设备";
-    elements.applicationVersion.textContent = "v1.3.0";
-    for (const badge of elements.appVersionBadges) badge.textContent = "v1.3.0";
+    elements.applicationVersion.textContent = "v1.5.0";
+    for (const badge of elements.appVersionBadges) badge.textContent = "v1.5.0";
   }
 }
 
@@ -1633,14 +1688,22 @@ async function importBatchFiles() {
     const selected = await open({
       multiple: true,
       directory: false,
-      title: "导入文本文件",
-      filters: [{ name: "文本文件", extensions: ["txt", "text", "md", "markdown"] }],
+      title: "导入文档文件",
+      filters: [{ name: "支持的文档", extensions: supportedDocumentExtensions }],
     });
     if (!selected) return;
     const paths = Array.isArray(selected) ? selected : [selected];
     if (batchItems.length + paths.length > maxBatchFiles) {
       showError(`批量列表最多保留 ${maxBatchFiles} 个文件`);
       return;
+    }
+    if (paths.some(isRichDocument)) {
+      const accepted = await askForConfirmation(
+        "文档文本提取提示",
+        richDocumentWarning,
+        { acceptLabel: "继续导入", danger: false },
+      );
+      if (!accepted) return;
     }
     const files = await invoke("read_batch_text_files", { paths });
     const oversized = files.filter((file) => file.characterCount > maxTextLength);
@@ -1666,7 +1729,9 @@ async function importBatchFiles() {
           ? "文件内容为空"
           : overLimit
             ? `超过 ${maxTextLength.toLocaleString("zh-CN")} 字限制`
-            : file.encoding === "UTF-8" ? "" : `已自动识别并转换 ${file.encoding} 编码`,
+            : richDocumentExtensions.has(file.encoding.toLocaleLowerCase("en-US"))
+              ? `已提取 ${file.encoding} 文本，请在生成前核对内容`
+              : file.encoding === "UTF-8" ? "" : `已自动识别并转换 ${file.encoding} 编码`,
         recordId: "",
         exportedPath: "",
       });
@@ -1748,17 +1813,18 @@ async function importLongText() {
     const selected = await open({
       multiple: false,
       directory: false,
-      title: "选择 50 万字以内的超长文本",
-      filters: [{ name: "文本文件", extensions: ["txt", "text", "md", "markdown"] }],
+      title: "选择 50 万字以内的文档",
+      filters: [{ name: "支持的文档", extensions: supportedDocumentExtensions }],
     });
     if (!selected || Array.isArray(selected)) return;
     console.info("[超长文字] 开始预检文件", { path: selected });
     const info = await invoke("inspect_long_text_file", { path: selected });
     console.info("[超长文字] 文件预检完成", info);
     const concurrency = generationConcurrency;
+    const documentWarning = isRichDocument(selected) ? ` ${richDocumentWarning}` : "";
     const accepted = await askForConfirmation(
       "开始超长文字生成？",
-      `${info.name} 共 ${info.characterCount.toLocaleString("zh-CN")} 字，将拆分为 ${info.segmentCount} 段并以 ${concurrency} 个任务并发生成。提高并发可能导致请求失败，是否继续？`,
+      `${info.name} 共 ${info.characterCount.toLocaleString("zh-CN")} 字，将拆分为 ${info.segmentCount} 段并以 ${concurrency} 个任务并发生成。提高并发可能导致请求失败。${documentWarning} 是否继续？`,
       { acceptLabel: "继续生成", danger: false },
     );
     if (!accepted) return;
@@ -1908,6 +1974,7 @@ async function runBatchItem(item, options, batchId) {
   try {
     const record = await invoke("synthesize_batch_item", {
       batchId,
+      sourceName: item.name,
       options: { ...options, text: item.text },
     });
     item.recordId = record.id;
@@ -2197,6 +2264,7 @@ elements.bottomGenerateButton.addEventListener("click", () => {
   synthesize();
 });
 elements.clearHistoryButton.addEventListener("click", clearHistory);
+elements.closeSaveNotificationButton.addEventListener("click", closeSaveNotification);
 elements.errorDetailButton.addEventListener("click", () => {
   const isOpen = elements.errorDetailControl.classList.toggle("is-open");
   elements.errorDetailButton.setAttribute("aria-expanded", String(isOpen));
