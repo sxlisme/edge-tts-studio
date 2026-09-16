@@ -62,6 +62,9 @@ import {
   createIcons,
 } from "lucide";
 
+const mobileUserAgent = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+if (mobileUserAgent) document.body.classList.add("mobile-app");
+
 const iconSet = {
   ArrowDown,
   ArrowUp,
@@ -1590,11 +1593,11 @@ async function loadAppInformation() {
       }
     }
   } catch (_) {
-    isDesktopApp = !/Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    isDesktopApp = !mobileUserAgent;
     document.body.classList.toggle("mobile-app", !isDesktopApp);
     elements.systemVersion.textContent = navigator.platform || "当前设备";
-    elements.applicationVersion.textContent = "v1.5.0";
-    for (const badge of elements.appVersionBadges) badge.textContent = "v1.5.0";
+    elements.applicationVersion.textContent = "v1.5.1";
+    for (const badge of elements.appVersionBadges) badge.textContent = "v1.5.1";
   }
 }
 

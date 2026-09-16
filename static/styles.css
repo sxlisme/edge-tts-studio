@@ -588,8 +588,6 @@ body.mobile-app .topbar-actions,
 body.mobile-app .mobile-editor-tabs,
 body.mobile-app .input-footer,
 body.mobile-app .document-import-warning,
-body.mobile-app .voice-library,
-body.mobile-app .voice-summary,
 body.mobile-app .batch-panel,
 body.mobile-app .long-text-panel,
 body.mobile-app .history-panel,
@@ -777,6 +775,111 @@ body.mobile-app .save-notification { top: calc(66px + env(safe-area-inset-top));
   .voice-preset strong { font-size: 9px; }
   .input-panel, .settings-panel { padding: 15px; }
   .project-summary { width: calc(100% - 80px); }
+}
+
+/* Native mobile app: one scrollable workspace with no desktop navigation. */
+body.mobile-app {
+  --mobile-safe-top: max(env(safe-area-inset-top, 0px), 24px);
+  --mobile-safe-bottom: max(env(safe-area-inset-bottom, 0px), 20px);
+  min-height: 100dvh;
+  padding: 0;
+  overflow-x: hidden;
+}
+body.mobile-app .app-frame { min-height: 100dvh; }
+body.mobile-app .app-body { min-height: 100dvh; }
+body.mobile-app .topbar {
+  position: sticky;
+  top: 0;
+  min-height: calc(56px + var(--mobile-safe-top));
+  padding: calc(9px + var(--mobile-safe-top)) 16px 9px;
+  gap: 0;
+}
+body.mobile-app .mobile-brand { min-width: 0; }
+body.mobile-app .mobile-brand strong { font-size: 16px; }
+body.mobile-app .content {
+  width: 100%;
+  max-width: 680px;
+  padding: 14px 14px calc(30px + var(--mobile-safe-bottom));
+}
+body.mobile-app .creator-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+body.mobile-app .input-panel,
+body.mobile-app .settings-panel {
+  display: block !important;
+  padding: 16px;
+  border-radius: 8px;
+}
+body.mobile-app .input-panel textarea {
+  min-height: 190px;
+  resize: vertical;
+  font-size: 16px;
+}
+body.mobile-app .voice-library { display: block !important; }
+body.mobile-app .voice-presets {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+body.mobile-app .voice-preset {
+  min-height: 76px;
+  height: auto;
+  padding: 8px;
+  touch-action: manipulation;
+}
+body.mobile-app .settings-grid { grid-template-columns: minmax(0, 1fr); }
+body.mobile-app .ui-select-trigger {
+  min-height: 50px;
+  height: 50px;
+  touch-action: manipulation;
+}
+body.mobile-app .voice-summary {
+  display: grid !important;
+  min-height: 58px;
+  padding: 9px 10px;
+}
+body.mobile-app .voice-summary code { display: none; }
+body.mobile-app .controls-grid { margin-top: 18px; gap: 15px; }
+body.mobile-app .range-field {
+  grid-template-columns: 74px minmax(0, 1fr);
+  min-height: 36px;
+}
+body.mobile-app input[type="range"] {
+  height: 32px;
+  touch-action: pan-x;
+}
+body.mobile-app .button-generate { min-height: 48px; height: 48px; }
+body.mobile-app .player-panel { margin-top: 12px; padding: 16px; }
+body.mobile-app .player-controls { grid-template-columns: 44px minmax(0, 1fr) 78px; }
+body.mobile-app .player-button { width: 44px; height: 44px; }
+body.mobile-app .save-notification {
+  top: calc(62px + var(--mobile-safe-top));
+  right: 12px;
+  width: calc(100vw - 24px);
+}
+body.mobile-app .ui-select-popover,
+body.mobile-app .voice-select-popover {
+  top: auto;
+  right: 12px;
+  bottom: calc(12px + var(--mobile-safe-bottom));
+  left: 12px;
+  width: auto;
+  min-width: 0;
+  max-height: min(68dvh, 560px);
+}
+body.mobile-app .ui-select-options { max-height: min(54dvh, 440px); }
+
+@media (max-width: 720px) {
+  body.mobile-app .sidebar,
+  body.mobile-app .sidebar-backdrop,
+  body.mobile-app .menu-button,
+  body.mobile-app .project-summary,
+  body.mobile-app .topbar-actions,
+  body.mobile-app .mobile-editor-tabs,
+  body.mobile-app .input-footer,
+  body.mobile-app .document-import-warning,
+  body.mobile-app .mobile-bottom-nav { display: none !important; }
 }
 
 @media (prefers-reduced-motion: reduce) {
