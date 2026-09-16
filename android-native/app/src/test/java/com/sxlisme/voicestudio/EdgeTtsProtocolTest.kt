@@ -55,6 +55,56 @@ class EdgeTtsProtocolTest {
     }
 
     @Test
+    fun splitsFiveThousandChineseCharactersWithinUtf8Limit() {
+        val text = "你好，欢迎使用语音工作台。".repeat(400).take(5_000)
+        val chunks = EdgeTtsProtocol.splitText(text)
+        assertTrue(chunks.size > 1)
+        assertTrue(chunks.all { it.toByteArray(Charsets.UTF_8).size <= 4_000 })
+        assertEquals(text, chunks.joinToString(""))
+    }
+
+    @Test
+    fun groupsMainlandHongKongAndTaiwanVoicesUnderChinese() {
+        val voices = VoiceCatalog.parse(
+            """[
+                {"ShortName":"zh-CN-XiaoxiaoNeural","Gender":"Female","Locale":"zh-CN"},
+                {"ShortName":"zh-HK-WanLungNeural","Gender":"Male","Locale":"zh-HK"},
+                {"ShortName":"zh-TW-HsiaoYuNeural","Gender":"Female","Locale":"zh-TW"},
+                {"ShortName":"en-US-JennyNeural","Gender":"Female","Locale":"en-US"}
+            ]""",
+        )
+        val languages = VoiceCatalog.languages(voices)
+        assertEquals(2, languages.size)
+        assertEquals(3, languages.single { it.languageCode == "zh" }.voiceCount)
+        assertTrue(voices.single { it.shortName == "zh-HK-WanLungNeural" }.localeName.contains("香港"))
+    }
+
+    @Test
+    fun loadsCompleteOnlineVoiceCatalog() {
+        val latch = CountDownLatch(1)
+        var result: List<VoiceOption>? = null
+        var failed = false
+        val call = EdgeTtsClient().loadVoices(object : EdgeTtsClient.VoiceCallback {
+            override fun onSuccess(voices: List<VoiceOption>) {
+                result = voices
+                latch.countDown()
+            }
+
+            override fun onFailure() {
+                failed = true
+                latch.countDown()
+            }
+        })
+        assertTrue("voice catalog request timed out", latch.await(45, TimeUnit.SECONDS))
+        call.cancel()
+        assertTrue("voice catalog request failed", !failed)
+        assertTrue("voice catalog was unexpectedly small", (result?.size ?: 0) > 100)
+        assertTrue(result.orEmpty().any { it.shortName == "zh-CN-XiaoxiaoNeural" })
+        assertTrue(result.orEmpty().any { it.locale == "zh-HK" })
+        assertTrue(result.orEmpty().any { it.locale == "zh-TW" })
+    }
+
+    @Test
     fun synthesizesShortMandarinAudio() {
         val latch = CountDownLatch(1)
         var result: ByteArray? = null

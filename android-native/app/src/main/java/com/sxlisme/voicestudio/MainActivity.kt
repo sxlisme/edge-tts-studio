@@ -1,6 +1,7 @@
 package com.sxlisme.voicestudio
 
 import android.Manifest
+import android.app.AlertDialog
 import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
@@ -14,10 +15,13 @@ import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
+import android.text.Editable
 import android.text.InputFilter
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
@@ -38,13 +42,15 @@ import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import okhttp3.WebSocket
+import okhttp3.Call
 
 class MainActivity : android.app.Activity() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val ttsClient = EdgeTtsClient()
 
     private lateinit var textInput: EditText
+    private lateinit var characterCount: TextView
+    private lateinit var languageSpinner: Spinner
     private lateinit var voiceSpinner: Spinner
     private lateinit var rateInput: SeekBar
     private lateinit var pitchInput: SeekBar
@@ -58,12 +64,16 @@ class MainActivity : android.app.Activity() {
     private lateinit var generationProgress: ProgressBar
 
     private var mediaPlayer: MediaPlayer? = null
-    private var activeSocket: WebSocket? = null
+    private var voiceLoadCall: Call? = null
+    private var activeSynthesis: EdgeTtsClient.SynthesisHandle? = null
     private var generatedFile: File? = null
     private var generatedAudio: ByteArray? = null
     private var generatedVoice: VoiceOption? = null
     private var generationId = 0
     private var pendingLegacySave = false
+    private var availableVoices = emptyList<VoiceOption>()
+    private var displayedVoices = emptyList<VoiceOption>()
+    private var availableLanguages = emptyList<LanguageOption>()
 
     private val progressUpdater = object : Runnable {
         override fun run() {
@@ -107,6 +117,7 @@ class MainActivity : android.app.Activity() {
         content.addView(createActionSection())
         content.addView(createPlayerSection())
         setContentView(scrollView)
+        loadVoices()
     }
 
     private fun createHeader(): View {
@@ -122,13 +133,17 @@ class MainActivity : android.app.Activity() {
         row.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(label("声工坊", 20f, TEXT_COLOR, Typeface.BOLD))
-            addView(label("原生 Android 版 · v1.6.0", 12f, MUTED_COLOR))
+            addView(label("原生 Android 版 · v1.6.1", 12f, MUTED_COLOR))
         })
         return row
     }
 
     private fun createInputSection(): View {
         val section = section("输入文字")
+        characterCount = label("0 / $MAX_TEXT_LENGTH 字", 12f, MUTED_COLOR).apply {
+            gravity = Gravity.END
+            setPadding(0, dp(6), dp(2), 0)
+        }
         textInput = EditText(this).apply {
             hint = "粘贴或输入需要转换成语音的内容"
             gravity = Gravity.TOP or Gravity.START
@@ -142,23 +157,47 @@ class MainActivity : android.app.Activity() {
             inputType = android.text.InputType.TYPE_CLASS_TEXT or
                 android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                 android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(value: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(value: CharSequence?, start: Int, before: Int, count: Int) = Unit
+                override fun afterTextChanged(value: Editable?) {
+                    val count = value?.length ?: 0
+                    characterCount.text = "$count / $MAX_TEXT_LENGTH 字"
+                    characterCount.setTextColor(if (count >= MAX_TEXT_LENGTH) ERROR_COLOR else MUTED_COLOR)
+                }
+            })
         }
         section.addView(textInput, matchWrapParams().apply { topMargin = dp(10) })
+        section.addView(characterCount, matchWrapParams())
         return section
     }
 
     private fun createVoiceSection(): View {
         val section = section("音色与参数")
+        section.addView(label("语言", 13f, MUTED_COLOR, Typeface.BOLD), matchWrapParams().apply {
+            topMargin = dp(10)
+        })
+        languageSpinner = Spinner(this, Spinner.MODE_DIALOG).apply {
+            minimumHeight = dp(52)
+            adapter = spinnerAdapter(listOf("正在加载语言…"))
+            isEnabled = false
+            contentDescription = "选择语言"
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    if (availableLanguages.isNotEmpty()) updateVoiceOptions(position)
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            }
+        }
+        section.addView(languageSpinner, matchWrapParams())
+
         section.addView(label("音色", 13f, MUTED_COLOR, Typeface.BOLD), matchWrapParams().apply {
             topMargin = dp(10)
         })
         voiceSpinner = Spinner(this, Spinner.MODE_DIALOG).apply {
             minimumHeight = dp(52)
-            adapter = ArrayAdapter(
-                this@MainActivity,
-                android.R.layout.simple_spinner_item,
-                VoiceCatalog.voices,
-            ).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+            adapter = spinnerAdapter(listOf("正在加载音色…"))
+            isEnabled = false
             contentDescription = "选择音色"
         }
         section.addView(voiceSpinner, matchWrapParams())
@@ -277,6 +316,69 @@ class MainActivity : android.app.Activity() {
         return slider
     }
 
+    private fun <T> spinnerAdapter(items: List<T>): ArrayAdapter<T> = ArrayAdapter(
+        this,
+        android.R.layout.simple_spinner_item,
+        items,
+    ).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+
+    private fun loadVoices() {
+        voiceLoadCall?.cancel()
+        generateButton.isEnabled = false
+        languageSpinner.isEnabled = false
+        voiceSpinner.isEnabled = false
+        statusText.setTextColor(MUTED_COLOR)
+        statusText.text = "正在加载全部在线音色…"
+        voiceLoadCall = ttsClient.loadVoices(object : EdgeTtsClient.VoiceCallback {
+            override fun onSuccess(voices: List<VoiceOption>) = runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                availableVoices = voices
+                availableLanguages = VoiceCatalog.languages(voices)
+                languageSpinner.adapter = spinnerAdapter(availableLanguages)
+                val defaultLanguage = availableLanguages.indexOfFirst { it.languageCode == "zh" }
+                    .takeIf { it >= 0 } ?: 0
+                languageSpinner.setSelection(defaultLanguage)
+                updateVoiceOptions(defaultLanguage)
+                languageSpinner.isEnabled = true
+                generateButton.isEnabled = true
+                statusText.setTextColor(SUCCESS_COLOR)
+                statusText.text = "已加载 ${availableLanguages.size} 种语言、${availableVoices.size} 个音色"
+            }
+
+            override fun onFailure() = runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                showVoiceLoadFailure()
+            }
+        })
+    }
+
+    private fun updateVoiceOptions(languagePosition: Int) {
+        val language = availableLanguages.getOrNull(languagePosition) ?: return
+        displayedVoices = availableVoices.filter { it.languageCode == language.languageCode }
+        voiceSpinner.adapter = spinnerAdapter(displayedVoices)
+        val defaultVoice = displayedVoices.indexOfFirst { it.shortName == DEFAULT_VOICE }
+            .takeIf { it >= 0 } ?: 0
+        voiceSpinner.setSelection(defaultVoice)
+        voiceSpinner.isEnabled = displayedVoices.isNotEmpty()
+    }
+
+    private fun showVoiceLoadFailure() {
+        availableVoices = emptyList()
+        availableLanguages = emptyList()
+        displayedVoices = emptyList()
+        generateButton.isEnabled = false
+        languageSpinner.isEnabled = false
+        voiceSpinner.isEnabled = false
+        statusText.setTextColor(ERROR_COLOR)
+        statusText.text = VOICE_LOAD_ERROR
+        AlertDialog.Builder(this)
+            .setTitle("音色获取失败")
+            .setMessage(VOICE_LOAD_ERROR)
+            .setCancelable(false)
+            .setPositiveButton("退出应用") { _, _ -> finishAndRemoveTask() }
+            .show()
+    }
+
     private fun generateSpeech() {
         val text = textInput.text.toString().trim()
         if (text.isEmpty()) {
@@ -285,32 +387,51 @@ class MainActivity : android.app.Activity() {
             return
         }
 
-        val voice = VoiceCatalog.voices[voiceSpinner.selectedItemPosition]
+        if (text.length > MAX_TEXT_LENGTH) {
+            textInput.error = "单次最多支持 $MAX_TEXT_LENGTH 字"
+            return
+        }
+
+        val voice = displayedVoices.getOrNull(voiceSpinner.selectedItemPosition)
+        if (voice == null) {
+            showVoiceLoadFailure()
+            return
+        }
         val requestId = ++generationId
-        activeSocket?.cancel()
+        activeSynthesis?.cancel()
         setGenerating(true)
         statusText.text = "正在生成 ${voice.displayName} 的语音…"
 
         val timeout = Runnable {
             if (requestId != generationId) return@Runnable
             generationId++
-            activeSocket?.cancel()
+            activeSynthesis?.cancel()
             setGenerating(false)
             statusText.setTextColor(ERROR_COLOR)
             statusText.text = "生成超时，请检查网络后重试"
         }
         mainHandler.postDelayed(timeout, GENERATION_TIMEOUT_MS)
 
-        activeSocket = ttsClient.synthesize(
+        activeSynthesis = ttsClient.synthesizeText(
             text = text,
             voice = voice.shortName,
             rate = rateInput.progress - 100,
             pitch = pitchInput.progress - 100,
             volume = volumeInput.progress - 100,
             callback = object : EdgeTtsClient.Callback {
+                override fun onProgress(current: Int, total: Int) = runOnUiThread {
+                    if (requestId != generationId) return@runOnUiThread
+                    statusText.text = if (total > 1) {
+                        "正在生成 ${voice.displayName} 的语音（$current/$total）…"
+                    } else {
+                        "正在生成 ${voice.displayName} 的语音…"
+                    }
+                }
+
                 override fun onSuccess(audio: ByteArray) = runOnUiThread {
                     if (requestId != generationId) return@runOnUiThread
                     mainHandler.removeCallbacks(timeout)
+                    activeSynthesis = null
                     setGenerating(false)
                     prepareAudio(audio, voice)
                 }
@@ -318,6 +439,7 @@ class MainActivity : android.app.Activity() {
                 override fun onFailure(message: String) = runOnUiThread {
                     if (requestId != generationId) return@runOnUiThread
                     mainHandler.removeCallbacks(timeout)
+                    activeSynthesis = null
                     setGenerating(false)
                     statusText.setTextColor(ERROR_COLOR)
                     statusText.text = "生成失败：$message"
@@ -382,7 +504,7 @@ class MainActivity : android.app.Activity() {
 
         saveButton.isEnabled = false
         val audio = generatedAudio!!.copyOf()
-        val voice = generatedVoice ?: VoiceCatalog.voices.first()
+        val voice = generatedVoice ?: return
         Thread {
             runCatching { writeToDownloads(audio, voice) }
                 .onSuccess { location -> runOnUiThread {
@@ -442,8 +564,10 @@ class MainActivity : android.app.Activity() {
     }
 
     private fun setGenerating(generating: Boolean) {
-        generateButton.isEnabled = !generating
-        voiceSpinner.isEnabled = !generating
+        val voicesReady = availableVoices.isNotEmpty() && displayedVoices.isNotEmpty()
+        generateButton.isEnabled = !generating && voicesReady
+        languageSpinner.isEnabled = !generating && voicesReady
+        voiceSpinner.isEnabled = !generating && voicesReady
         generationProgress.visibility = if (generating) View.VISIBLE else View.GONE
         generateButton.text = if (generating) "正在生成…" else "生成语音"
         if (generating) {
@@ -501,7 +625,8 @@ class MainActivity : android.app.Activity() {
 
     override fun onDestroy() {
         generationId++
-        activeSocket?.cancel()
+        voiceLoadCall?.cancel()
+        activeSynthesis?.cancel()
         releasePlayer()
         generatedFile?.delete()
         super.onDestroy()
@@ -509,8 +634,10 @@ class MainActivity : android.app.Activity() {
 
     companion object {
         private const val MAX_TEXT_LENGTH = 5_000
-        private const val GENERATION_TIMEOUT_MS = 60_000L
+        private const val GENERATION_TIMEOUT_MS = 180_000L
         private const val STORAGE_PERMISSION_REQUEST = 1001
+        private const val DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural"
+        private const val VOICE_LOAD_ERROR = "网络异常，请退出重试"
         private val PAGE_COLOR = Color.rgb(244, 246, 250)
         private val TEXT_COLOR = Color.rgb(25, 32, 47)
         private val MUTED_COLOR = Color.rgb(100, 111, 132)

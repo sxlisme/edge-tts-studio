@@ -48,11 +48,12 @@ jobs:
       - name: Verify native APK integrity, manifest, and signature
         shell: bash
         run: |
+          version=$(node -p "require('./package.json').version")
           apk_path=$(find release-files -type f -name '*.apk' -print -quit)
           test -n "$apk_path"
           unzip -tq "$apk_path"
           unzip -l "$apk_path" | grep -Eq 'classes.*\.dex'
-          "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$apk_path" | grep -E "package: name='com.sxlisme.voicestudio'.*versionName='1.6.0'"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$apk_path" | grep -E "package: name='com.sxlisme.voicestudio'.*versionName='$version'"
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$apk_path"
           sha256sum "$apk_path"
       - uses: actions/upload-artifact@v4

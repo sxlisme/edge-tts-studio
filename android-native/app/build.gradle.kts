@@ -11,8 +11,8 @@ android {
         applicationId = "com.sxlisme.voicestudio"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10600
-        versionName = "1.6.0"
+        versionCode = 10601
+        versionName = "1.6.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -44,4 +44,5 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

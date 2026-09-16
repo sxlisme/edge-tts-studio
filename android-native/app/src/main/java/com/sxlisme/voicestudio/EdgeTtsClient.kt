@@ -7,6 +7,7 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -50,6 +51,40 @@ object EdgeTtsProtocol {
         return frame.copyOfRange(audioStart, frame.size)
     }
 
+    fun splitText(text: String, maxBytes: Int = 4_000): List<String> {
+        require(maxBytes > 0)
+        val chunks = mutableListOf<String>()
+        var remaining = text.trim()
+        while (remaining.isNotEmpty()) {
+            if (remaining.toByteArray(Charsets.UTF_8).size <= maxBytes) {
+                chunks += remaining
+                break
+            }
+            var bytes = 0
+            var offset = 0
+            var safeEnd = 0
+            var preferredEnd = 0
+            while (offset < remaining.length) {
+                val codePoint = remaining.codePointAt(offset)
+                val character = String(Character.toChars(codePoint))
+                val characterBytes = character.toByteArray(Charsets.UTF_8).size
+                if (bytes + characterBytes > maxBytes) break
+                bytes += characterBytes
+                offset += Character.charCount(codePoint)
+                safeEnd = offset
+                if (bytes >= maxBytes / 2 &&
+                    (Character.isWhitespace(codePoint) || codePoint in BREAK_CODE_POINTS)
+                ) {
+                    preferredEnd = safeEnd
+                }
+            }
+            val end = preferredEnd.takeIf { it > 0 } ?: safeEnd.coerceAtLeast(1)
+            chunks += remaining.substring(0, end)
+            remaining = remaining.substring(end).trimStart()
+        }
+        return chunks
+    }
+
     internal fun securityToken(nowMillis: Long): String {
         val windowsEpochMillis = nowMillis + 11_644_473_600_000L
         var ticks = windowsEpochMillis * 10_000L
@@ -66,12 +101,39 @@ object EdgeTtsProtocol {
         .replace("'", "&apos;")
 
     private fun signed(value: Int): String = if (value >= 0) "+$value" else value.toString()
+
+    private val BREAK_CODE_POINTS = setOf('。', '！', '？', '；', '，', '.', '!', '?', ';', ',')
+        .map(Char::code)
+        .toSet()
 }
 
 class EdgeTtsClient {
     interface Callback {
+        fun onProgress(current: Int, total: Int) = Unit
         fun onSuccess(audio: ByteArray)
         fun onFailure(message: String)
+    }
+
+    interface VoiceCallback {
+        fun onSuccess(voices: List<VoiceOption>)
+        fun onFailure()
+    }
+
+    class SynthesisHandle internal constructor() {
+        private val cancelled = AtomicBoolean(false)
+        @Volatile private var socket: WebSocket? = null
+
+        fun cancel() {
+            cancelled.set(true)
+            socket?.cancel()
+        }
+
+        internal fun attach(socket: WebSocket) {
+            this.socket = socket
+            if (cancelled.get()) socket.cancel()
+        }
+
+        internal fun isCancelled(): Boolean = cancelled.get()
     }
 
     private val client = OkHttpClient.Builder()
@@ -79,6 +141,78 @@ class EdgeTtsClient {
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .pingInterval(20, TimeUnit.SECONDS)
         .build()
+
+    fun loadVoices(callback: VoiceCallback): Call {
+        val request = Request.Builder()
+            .url(VOICE_LIST_URL)
+            .header("User-Agent", USER_AGENT)
+            .build()
+        return client.newCall(request).also { call ->
+            call.timeout().timeout(30, TimeUnit.SECONDS)
+            call.enqueue(object : okhttp3.Callback {
+                override fun onFailure(call: Call, error: java.io.IOException) {
+                    if (!call.isCanceled()) callback.onFailure()
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    response.use {
+                        val body = it.body?.string()
+                        if (!it.isSuccessful || body.isNullOrBlank()) {
+                            callback.onFailure()
+                            return
+                        }
+                        runCatching { VoiceCatalog.parse(body) }
+                            .onSuccess { voices ->
+                                if (voices.isEmpty()) callback.onFailure() else callback.onSuccess(voices)
+                            }
+                            .onFailure { callback.onFailure() }
+                    }
+                }
+            })
+        }
+    }
+
+    fun synthesizeText(
+        text: String,
+        voice: String,
+        rate: Int,
+        pitch: Int,
+        volume: Int,
+        callback: Callback,
+    ): SynthesisHandle {
+        val chunks = EdgeTtsProtocol.splitText(text)
+        val handle = SynthesisHandle()
+        val combinedAudio = ByteArrayOutputStream()
+
+        fun synthesizeChunk(index: Int) {
+            if (handle.isCancelled()) return
+            callback.onProgress(index + 1, chunks.size)
+            val socket = synthesize(
+                text = chunks[index],
+                voice = voice,
+                rate = rate,
+                pitch = pitch,
+                volume = volume,
+                callback = object : Callback {
+                    override fun onSuccess(audio: ByteArray) {
+                        if (handle.isCancelled()) return
+                        combinedAudio.write(audio)
+                        if (index + 1 < chunks.size) synthesizeChunk(index + 1)
+                        else callback.onSuccess(combinedAudio.toByteArray())
+                    }
+
+                    override fun onFailure(message: String) {
+                        if (!handle.isCancelled()) callback.onFailure(message)
+                    }
+                },
+            )
+            handle.attach(socket)
+        }
+
+        if (chunks.isEmpty()) callback.onFailure("请输入需要转换的文字")
+        else synthesizeChunk(0)
+        return handle
+    }
 
     fun synthesize(
         text: String,
@@ -137,6 +271,9 @@ class EdgeTtsClient {
     }
 
     companion object {
+        private const val VOICE_LIST_URL =
+            "https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/voices/list" +
+                "?trustedclienttoken=6A5AA1D4EAFF4E9FB37E23D68491D6F4"
         private const val USER_AGENT = "Mozilla/5.0 (Linux; Android 10; HD1913) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/143.0.7499.193 Mobile Safari/537.36 EdgA/143.0.3650.125"
         private const val ORIGIN = "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold"
