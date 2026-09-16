@@ -4,4 +4,7 @@ node_modules/
 dist/
 src-tauri/target/
 src-tauri/gen/schemas/
+android-native/.gradle/
+android-native/**/build/
+android-native/local.properties
 data/

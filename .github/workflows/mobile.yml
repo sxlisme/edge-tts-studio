@@ -19,52 +19,40 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
       - uses: android-actions/setup-android@v4
         with:
           packages: ""
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: gradle/actions/setup-gradle@v4
         with:
-          targets: aarch64-linux-android
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
+          gradle-version: "8.11.1"
       - name: Install Android SDK components
         shell: bash
         run: |
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.0.12077973"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
-          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
-      - run: npm ci
-      - run: npm run tauri -- android init --ci
-      - name: Build installable arm64 APK
-        run: npm run tauri -- android build --target aarch64 --apk --debug --ci
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+      - name: Test native TTS protocol and live synthesis
+        run: gradle -p android-native :app:testDebugUnitTest --stacktrace
+      - name: Build native Android APK
+        run: gradle -p android-native :app:assembleDebug --stacktrace
       - name: Normalize APK filename
         shell: bash
         run: |
           version=$(node -p "require('./package.json').version")
-          apk_path=$(find src-tauri/gen/android/app/build/outputs/apk -type f -name '*.apk' -print -quit)
+          apk_path=$(find android-native/app/build/outputs/apk -type f -name '*.apk' -print -quit)
           test -n "$apk_path"
           mkdir -p release-files
-          cp "$apk_path" "release-files/Android_VoiceStudio_${version}_arm64-v8a-debug.apk"
-      - name: Verify APK integrity, ABI, and signature
+          cp "$apk_path" "release-files/Android_VoiceStudio_${version}_native-debug.apk"
+      - name: Verify native APK integrity, manifest, and signature
         shell: bash
         run: |
           apk_path=$(find release-files -type f -name '*.apk' -print -quit)
           test -n "$apk_path"
           unzip -tq "$apk_path"
-          unzip -l "$apk_path" | grep -Eq 'lib/arm64-v8a/.*\.so'
-          if unzip -l "$apk_path" | grep -Eq 'lib/(armeabi-v7a|x86|x86_64)/'; then
-            echo "Unexpected non-arm64 native library in $apk_path" >&2
-            exit 1
-          fi
+          unzip -l "$apk_path" | grep -Eq 'classes.*\.dex'
+          "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$apk_path" | grep -E "package: name='com.sxlisme.voicestudio'.*versionName='1.6.0'"
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$apk_path"
           sha256sum "$apk_path"
       - uses: actions/upload-artifact@v4
