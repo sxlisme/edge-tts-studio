@@ -3,24 +3,31 @@ package com.sxlisme.voicestudio
 import android.Manifest
 import android.app.AlertDialog
 import android.content.ContentValues
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.media.MediaPlayer
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
+import android.provider.OpenableColumns
 import android.text.Editable
 import android.text.InputFilter
 import android.text.TextWatcher
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.inputmethod.InputMethodManager
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
@@ -37,8 +44,12 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
+import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -47,11 +58,17 @@ import okhttp3.Call
 class MainActivity : android.app.Activity() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val ttsClient = EdgeTtsClient()
+    private val preferences by lazy { getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE) }
 
     private lateinit var textInput: EditText
     private lateinit var characterCount: TextView
+    private lateinit var importButton: Button
+    private lateinit var clearImportButton: Button
+    private lateinit var importInfo: TextView
     private lateinit var languageSpinner: Spinner
     private lateinit var voiceSpinner: Spinner
+    private lateinit var parameterToggle: Button
+    private lateinit var parameterPanel: LinearLayout
     private lateinit var rateInput: SeekBar
     private lateinit var pitchInput: SeekBar
     private lateinit var volumeInput: SeekBar
@@ -65,15 +82,20 @@ class MainActivity : android.app.Activity() {
 
     private var mediaPlayer: MediaPlayer? = null
     private var voiceLoadCall: Call? = null
+    private var voiceErrorDialog: AlertDialog? = null
     private var activeSynthesis: EdgeTtsClient.SynthesisHandle? = null
     private var generatedFile: File? = null
     private var generatedAudio: ByteArray? = null
     private var generatedVoice: VoiceOption? = null
+    private var generatedSourceName: String? = null
     private var generationId = 0
     private var pendingLegacySave = false
     private var availableVoices = emptyList<VoiceOption>()
     private var displayedVoices = emptyList<VoiceOption>()
     private var availableLanguages = emptyList<LanguageOption>()
+    private var importedText: String? = null
+    private var importedFileName: String? = null
+    private var restoringVoicePreferences = false
 
     private val progressUpdater = object : Runnable {
         override fun run() {
@@ -133,7 +155,7 @@ class MainActivity : android.app.Activity() {
         row.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(label("声工坊", 20f, TEXT_COLOR, Typeface.BOLD))
-            addView(label("原生 Android 版 · v1.6.1", 12f, MUTED_COLOR))
+            addView(label("原生 Android 版 · v1.7.0", 12f, MUTED_COLOR))
         })
         return row
     }
@@ -169,6 +191,35 @@ class MainActivity : android.app.Activity() {
         }
         section.addView(textInput, matchWrapParams().apply { topMargin = dp(10) })
         section.addView(characterCount, matchWrapParams())
+
+        val importActions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        importButton = Button(this).apply {
+            text = "导入 TXT"
+            isAllCaps = false
+            minimumHeight = dp(48)
+            setOnClickListener { openTextFilePicker() }
+        }
+        clearImportButton = Button(this).apply {
+            text = "移除文件"
+            isAllCaps = false
+            minimumHeight = dp(48)
+            visibility = View.GONE
+            setOnClickListener { clearImportedFile() }
+        }
+        importActions.addView(importButton, LinearLayout.LayoutParams(0, dp(50), 1f).apply {
+            marginEnd = dp(6)
+        })
+        importActions.addView(clearImportButton, LinearLayout.LayoutParams(0, dp(50), 1f).apply {
+            marginStart = dp(6)
+        })
+        importInfo = label(IMPORT_LIMIT_HINT, 13f, MUTED_COLOR).apply {
+            setPadding(dp(2), dp(7), dp(2), 0)
+        }
+        section.addView(importActions, matchWrapParams().apply { topMargin = dp(8) })
+        section.addView(importInfo, matchWrapParams())
         return section
     }
 
@@ -184,7 +235,21 @@ class MainActivity : android.app.Activity() {
             contentDescription = "选择语言"
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                    if (availableLanguages.isNotEmpty()) updateVoiceOptions(position)
+                    if (availableLanguages.isNotEmpty()) {
+                        val language = availableLanguages[position]
+                        if (!restoringVoicePreferences) {
+                            preferences.edit()
+                                .putString(PREFERENCE_LANGUAGE, language.languageCode)
+                                .apply()
+                        }
+                        val cachedVoice = preferences.getString(PREFERENCE_VOICE, null)
+                            ?.takeIf { shortName ->
+                                availableVoices.any {
+                                    it.shortName == shortName && it.languageCode == language.languageCode
+                                }
+                            }
+                        updateVoiceOptions(position, cachedVoice)
+                    }
                 }
                 override fun onNothingSelected(parent: AdapterView<*>?) = Unit
             }
@@ -199,12 +264,34 @@ class MainActivity : android.app.Activity() {
             adapter = spinnerAdapter(listOf("正在加载音色…"))
             isEnabled = false
             contentDescription = "选择音色"
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    displayedVoices.getOrNull(position)?.takeUnless { restoringVoicePreferences }?.let { voice ->
+                        preferences.edit().putString(PREFERENCE_VOICE, voice.shortName).apply()
+                    }
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            }
         }
         section.addView(voiceSpinner, matchWrapParams())
 
-        rateInput = addParameter(section, "语速", "%")
-        pitchInput = addParameter(section, "音调", " Hz")
-        volumeInput = addParameter(section, "音量", "%")
+        parameterToggle = Button(this).apply {
+            text = "展开参数设置"
+            isAllCaps = false
+            minimumHeight = dp(48)
+            contentDescription = "展开语速、音调和音量设置"
+            setOnClickListener { toggleParameterPanel() }
+        }
+        parameterPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        section.addView(parameterToggle, matchWrapParams().apply { topMargin = dp(10) })
+        section.addView(parameterPanel, matchWrapParams())
+
+        rateInput = addParameter(parameterPanel, "语速", "%", PREFERENCE_RATE)
+        pitchInput = addParameter(parameterPanel, "音调", " Hz", PREFERENCE_PITCH)
+        volumeInput = addParameter(parameterPanel, "音量", "%", PREFERENCE_VOLUME)
         return section
     }
 
@@ -222,17 +309,19 @@ class MainActivity : android.app.Activity() {
             backgroundTintList = ColorStateList.valueOf(ACCENT_COLOR)
             setOnClickListener { generateSpeech() }
         }
-        generationProgress = ProgressBar(this).apply {
+        generationProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             visibility = View.GONE
-            isIndeterminate = true
+            isIndeterminate = false
+            max = 1
+            progress = 0
+            progressTintList = ColorStateList.valueOf(ACCENT_COLOR)
         }
         statusText = label("请输入文字并选择音色", 13f, MUTED_COLOR).apply {
             gravity = Gravity.CENTER
             setPadding(dp(8), dp(10), dp(8), 0)
         }
         container.addView(generateButton, matchWrapParams())
-        container.addView(generationProgress, linearParams(dp(36), dp(36)).apply {
-            gravity = Gravity.CENTER_HORIZONTAL
+        container.addView(generationProgress, matchWrapParams().apply {
             topMargin = dp(8)
         })
         container.addView(statusText, matchWrapParams())
@@ -272,6 +361,8 @@ class MainActivity : android.app.Activity() {
             isAllCaps = false
             isEnabled = false
             minimumHeight = dp(50)
+            setTextColor(Color.WHITE)
+            backgroundTintList = ColorStateList.valueOf(ACCENT_COLOR)
             setOnClickListener { saveGeneratedAudio() }
         }
         actions.addView(playButton, LinearLayout.LayoutParams(0, dp(52), 1f).apply { marginEnd = dp(6) })
@@ -283,7 +374,7 @@ class MainActivity : android.app.Activity() {
         return section
     }
 
-    private fun addParameter(parent: LinearLayout, name: String, suffix: String): SeekBar {
+    private fun addParameter(parent: LinearLayout, name: String, suffix: String, preferenceKey: String): SeekBar {
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -306,14 +397,27 @@ class MainActivity : android.app.Activity() {
                 override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
                     val value = progress - 100
                     valueLabel.text = "${if (value > 0) "+" else ""}$value$suffix"
+                    if (fromUser) preferences.edit().putInt(preferenceKey, value).apply()
                 }
                 override fun onStartTrackingTouch(seekBar: SeekBar) = Unit
                 override fun onStopTrackingTouch(seekBar: SeekBar) = Unit
             })
+            progress = preferences.getInt(preferenceKey, 0).coerceIn(-100, 100) + 100
         }
         parent.addView(header, matchWrapParams().apply { topMargin = dp(14) })
         parent.addView(slider, matchWrapParams())
         return slider
+    }
+
+    private fun toggleParameterPanel() {
+        val expanded = parameterPanel.visibility != View.VISIBLE
+        parameterPanel.visibility = if (expanded) View.VISIBLE else View.GONE
+        parameterToggle.text = if (expanded) "收起参数设置" else "展开参数设置"
+        parameterToggle.contentDescription = if (expanded) {
+            "收起语速、音调和音量设置"
+        } else {
+            "展开语速、音调和音量设置"
+        }
     }
 
     private fun <T> spinnerAdapter(items: List<T>): ArrayAdapter<T> = ArrayAdapter(
@@ -332,13 +436,21 @@ class MainActivity : android.app.Activity() {
         voiceLoadCall = ttsClient.loadVoices(object : EdgeTtsClient.VoiceCallback {
             override fun onSuccess(voices: List<VoiceOption>) = runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
+                voiceErrorDialog?.dismiss()
+                voiceErrorDialog = null
                 availableVoices = voices
                 availableLanguages = VoiceCatalog.languages(voices)
+                val cachedVoice = preferences.getString(PREFERENCE_VOICE, null)
+                restoringVoicePreferences = true
                 languageSpinner.adapter = spinnerAdapter(availableLanguages)
-                val defaultLanguage = availableLanguages.indexOfFirst { it.languageCode == "zh" }
+                val cachedLanguage = availableVoices.firstOrNull { it.shortName == cachedVoice }?.languageCode
+                    ?: preferences.getString(PREFERENCE_LANGUAGE, null)
+                    ?: "zh"
+                val defaultLanguage = availableLanguages.indexOfFirst { it.languageCode == cachedLanguage }
                     .takeIf { it >= 0 } ?: 0
                 languageSpinner.setSelection(defaultLanguage)
-                updateVoiceOptions(defaultLanguage)
+                updateVoiceOptions(defaultLanguage, cachedVoice)
+                restoringVoicePreferences = false
                 languageSpinner.isEnabled = true
                 generateButton.isEnabled = true
                 statusText.setTextColor(SUCCESS_COLOR)
@@ -352,11 +464,13 @@ class MainActivity : android.app.Activity() {
         })
     }
 
-    private fun updateVoiceOptions(languagePosition: Int) {
+    private fun updateVoiceOptions(languagePosition: Int, preferredVoice: String? = null) {
         val language = availableLanguages.getOrNull(languagePosition) ?: return
         displayedVoices = availableVoices.filter { it.languageCode == language.languageCode }
         voiceSpinner.adapter = spinnerAdapter(displayedVoices)
-        val defaultVoice = displayedVoices.indexOfFirst { it.shortName == DEFAULT_VOICE }
+        val defaultVoice = displayedVoices.indexOfFirst {
+            it.shortName == preferredVoice || (preferredVoice == null && it.shortName == DEFAULT_VOICE)
+        }
             .takeIf { it >= 0 } ?: 0
         voiceSpinner.setSelection(defaultVoice)
         voiceSpinner.isEnabled = displayedVoices.isNotEmpty()
@@ -371,24 +485,177 @@ class MainActivity : android.app.Activity() {
         voiceSpinner.isEnabled = false
         statusText.setTextColor(ERROR_COLOR)
         statusText.text = VOICE_LOAD_ERROR
-        AlertDialog.Builder(this)
+        voiceErrorDialog?.dismiss()
+        voiceErrorDialog = AlertDialog.Builder(this)
             .setTitle("音色获取失败")
             .setMessage(VOICE_LOAD_ERROR)
-            .setCancelable(false)
-            .setPositiveButton("退出应用") { _, _ -> finishAndRemoveTask() }
+            .setPositiveButton("重试") { _, _ -> loadVoices() }
+            .setNegativeButton("关闭", null)
+            .create()
+            .also { it.show() }
+    }
+
+    private fun openTextFilePicker() {
+        hideKeyboard()
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "text/plain"
+        }
+        startActivityForResult(intent, TEXT_FILE_REQUEST)
+    }
+
+    @Deprecated("Kept for Android 8 compatibility")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != TEXT_FILE_REQUEST || resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        importTextFile(uri)
+    }
+
+    private fun importTextFile(uri: Uri) {
+        val metadata = runCatching { queryFileMetadata(uri) }.getOrElse {
+            showImportError("文件读取失败，请重新选择。")
+            return
+        }
+        if (!metadata.name.endsWith(".txt", ignoreCase = true)) {
+            showImportError("仅支持 TXT 文本文件。")
+            return
+        }
+        if (metadata.size != null && metadata.size > MAX_FILE_BYTES) {
+            showImportError(FILE_TOO_LARGE_MESSAGE)
+            return
+        }
+
+        importButton.isEnabled = false
+        statusText.setTextColor(MUTED_COLOR)
+        statusText.text = "正在读取 ${metadata.name}…"
+        Thread {
+            runCatching { readTextFile(uri) }
+                .onSuccess { text -> runOnUiThread {
+                    importButton.isEnabled = true
+                    if (text.length > MAX_FILE_CHARACTERS) {
+                        showImportError(TEXT_TOO_LONG_MESSAGE)
+                        return@runOnUiThread
+                    }
+                    if (text.isBlank()) {
+                        showImportError("TXT 文件中没有可生成的文字。")
+                        return@runOnUiThread
+                    }
+                    importedText = text.trim()
+                    importedFileName = metadata.name
+                    textInput.visibility = View.GONE
+                    characterCount.visibility = View.GONE
+                    clearImportButton.visibility = View.VISIBLE
+                    importInfo.visibility = View.VISIBLE
+                    importInfo.text = "已导入：${metadata.name} · ${importedText!!.length} / $MAX_FILE_CHARACTERS 字"
+                    importButton.text = "重新选择 TXT"
+                    statusText.setTextColor(SUCCESS_COLOR)
+                    statusText.text = "文件已就绪，可选择音色后生成"
+                } }
+                .onFailure { error -> runOnUiThread {
+                    importButton.isEnabled = true
+                    showImportError(
+                        if (error is FileTooLargeException) FILE_TOO_LARGE_MESSAGE
+                        else "文件读取失败，请重新选择。",
+                    )
+                } }
+        }.start()
+    }
+
+    private fun queryFileMetadata(uri: Uri): FileMetadata {
+        var name = "导入文本.txt"
+        var size: Long? = null
+        contentResolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+            null,
+            null,
+            null,
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (nameIndex >= 0) name = cursor.getString(nameIndex) ?: name
+                if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) size = cursor.getLong(sizeIndex)
+            }
+        }
+        return FileMetadata(name, size)
+    }
+
+    private fun readTextFile(uri: Uri): String {
+        val bytes = contentResolver.openInputStream(uri)?.use { input ->
+            val output = ByteArrayOutputStream()
+            val buffer = ByteArray(8 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                output.write(buffer, 0, count)
+                if (output.size().toLong() > MAX_FILE_BYTES) throw FileTooLargeException()
+            }
+            output.toByteArray()
+        } ?: error("无法打开文件")
+        return decodeText(bytes).replace("\u0000", "")
+    }
+
+    private fun decodeText(bytes: ByteArray): String {
+        if (bytes.size >= 2 && bytes[0] == 0xff.toByte() && bytes[1] == 0xfe.toByte()) {
+            return String(bytes, 2, bytes.size - 2, Charsets.UTF_16LE)
+        }
+        if (bytes.size >= 2 && bytes[0] == 0xfe.toByte() && bytes[1] == 0xff.toByte()) {
+            return String(bytes, 2, bytes.size - 2, Charsets.UTF_16BE)
+        }
+        val offset = if (bytes.size >= 3 && bytes[0] == 0xef.toByte() &&
+            bytes[1] == 0xbb.toByte() && bytes[2] == 0xbf.toByte()
+        ) 3 else 0
+        return runCatching {
+            StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(bytes, offset, bytes.size - offset))
+                .toString()
+        }.getOrElse {
+            String(bytes, offset, bytes.size - offset, charset("GB18030"))
+        }
+    }
+
+    private fun clearImportedFile() {
+        importedText = null
+        importedFileName = null
+        textInput.visibility = View.VISIBLE
+        characterCount.visibility = View.VISIBLE
+        clearImportButton.visibility = View.GONE
+        importInfo.visibility = View.VISIBLE
+        importInfo.text = IMPORT_LIMIT_HINT
+        importButton.text = "导入 TXT"
+        statusText.setTextColor(MUTED_COLOR)
+        statusText.text = "已切换为手动输入"
+    }
+
+    private fun showImportError(message: String) {
+        statusText.setTextColor(ERROR_COLOR)
+        statusText.text = message
+        AlertDialog.Builder(this)
+            .setTitle("无法导入")
+            .setMessage(message)
+            .setPositiveButton("知道了", null)
             .show()
     }
 
     private fun generateSpeech() {
-        val text = textInput.text.toString().trim()
+        val sourceFileName = importedFileName
+        val text = (importedText ?: textInput.text.toString()).trim()
         if (text.isEmpty()) {
             textInput.error = "请输入需要转换的文字"
             textInput.requestFocus()
             return
         }
 
-        if (text.length > MAX_TEXT_LENGTH) {
+        if (sourceFileName == null && text.length > MAX_TEXT_LENGTH) {
             textInput.error = "单次最多支持 $MAX_TEXT_LENGTH 字"
+            return
+        }
+        if (sourceFileName != null && text.length > MAX_FILE_CHARACTERS) {
+            showImportError(TEXT_TOO_LONG_MESSAGE)
             return
         }
 
@@ -410,7 +677,8 @@ class MainActivity : android.app.Activity() {
             statusText.setTextColor(ERROR_COLOR)
             statusText.text = "生成超时，请检查网络后重试"
         }
-        mainHandler.postDelayed(timeout, GENERATION_TIMEOUT_MS)
+        val timeoutMillis = if (sourceFileName == null) GENERATION_TIMEOUT_MS else FILE_GENERATION_TIMEOUT_MS
+        mainHandler.postDelayed(timeout, timeoutMillis)
 
         activeSynthesis = ttsClient.synthesizeText(
             text = text,
@@ -421,6 +689,8 @@ class MainActivity : android.app.Activity() {
             callback = object : EdgeTtsClient.Callback {
                 override fun onProgress(current: Int, total: Int) = runOnUiThread {
                     if (requestId != generationId) return@runOnUiThread
+                    generationProgress.max = total
+                    generationProgress.progress = current - 1
                     statusText.text = if (total > 1) {
                         "正在生成 ${voice.displayName} 的语音（$current/$total）…"
                     } else {
@@ -428,12 +698,23 @@ class MainActivity : android.app.Activity() {
                     }
                 }
 
+                override fun onChunkComplete(completed: Int, total: Int) = runOnUiThread {
+                    if (requestId != generationId) return@runOnUiThread
+                    generationProgress.max = total
+                    generationProgress.progress = completed
+                }
+
+                override fun onRetry(current: Int, total: Int, retryCount: Int) = runOnUiThread {
+                    if (requestId != generationId) return@runOnUiThread
+                    statusText.text = "第 $current/$total 段生成失败，正在重试 $retryCount/${EdgeTtsClient.MAX_CHUNK_RETRIES}…"
+                }
+
                 override fun onSuccess(audio: ByteArray) = runOnUiThread {
                     if (requestId != generationId) return@runOnUiThread
                     mainHandler.removeCallbacks(timeout)
                     activeSynthesis = null
                     setGenerating(false)
-                    prepareAudio(audio, voice)
+                    prepareAudio(audio, voice, sourceFileName)
                 }
 
                 override fun onFailure(message: String) = runOnUiThread {
@@ -448,13 +729,14 @@ class MainActivity : android.app.Activity() {
         )
     }
 
-    private fun prepareAudio(audio: ByteArray, voice: VoiceOption) {
+    private fun prepareAudio(audio: ByteArray, voice: VoiceOption, sourceFileName: String?) {
         try {
             releasePlayer()
             generatedFile?.delete()
             generatedFile = File(cacheDir, "voice-studio-preview.mp3").apply { writeBytes(audio) }
             generatedAudio = audio
             generatedVoice = voice
+            generatedSourceName = sourceFileName
 
             mediaPlayer = MediaPlayer().apply {
                 setDataSource(generatedFile!!.absolutePath)
@@ -502,11 +784,12 @@ class MainActivity : android.app.Activity() {
             return
         }
 
+        val voice = generatedVoice ?: return
+        val sourceName = generatedSourceName
         saveButton.isEnabled = false
         val audio = generatedAudio!!.copyOf()
-        val voice = generatedVoice ?: return
         Thread {
-            runCatching { writeToDownloads(audio, voice) }
+            runCatching { writeToDownloads(audio, voice, sourceName) }
                 .onSuccess { location -> runOnUiThread {
                     saveButton.isEnabled = true
                     statusText.setTextColor(SUCCESS_COLOR)
@@ -521,9 +804,15 @@ class MainActivity : android.app.Activity() {
         }.start()
     }
 
-    private fun writeToDownloads(audio: ByteArray, voice: VoiceOption): String {
+    private fun writeToDownloads(audio: ByteArray, voice: VoiceOption, sourceName: String?): String {
         val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(Date())
-        val fileName = "声工坊-${voice.displayName}-$timestamp.mp3"
+        val importedBaseName = sourceName
+            ?.substringBeforeLast('.', sourceName)
+            ?.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+        val fileName = importedBaseName?.let { "$it.mp3" }
+            ?: "声工坊-${voice.displayName}-$timestamp.mp3"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, fileName)
@@ -569,7 +858,18 @@ class MainActivity : android.app.Activity() {
         languageSpinner.isEnabled = !generating && voicesReady
         voiceSpinner.isEnabled = !generating && voicesReady
         generationProgress.visibility = if (generating) View.VISIBLE else View.GONE
+        if (generating) {
+            generationProgress.max = 1
+            generationProgress.progress = 0
+        }
         generateButton.text = if (generating) "正在生成…" else "生成语音"
+        textInput.isEnabled = !generating
+        importButton.isEnabled = !generating
+        clearImportButton.isEnabled = !generating
+        parameterToggle.isEnabled = !generating
+        rateInput.isEnabled = !generating
+        pitchInput.isEnabled = !generating
+        volumeInput.isEnabled = !generating
         if (generating) {
             statusText.setTextColor(MUTED_COLOR)
             playButton.isEnabled = false
@@ -617,6 +917,27 @@ class MainActivity : android.app.Activity() {
     }
     private fun MediaPlayer.isPrepared(): Boolean = runCatching { duration >= 0 }.getOrDefault(false)
 
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (event.action == MotionEvent.ACTION_DOWN) {
+            val focused = currentFocus
+            if (focused is EditText) {
+                val bounds = Rect()
+                focused.getGlobalVisibleRect(bounds)
+                if (!bounds.contains(event.rawX.toInt(), event.rawY.toInt())) {
+                    focused.clearFocus()
+                    hideKeyboard()
+                }
+            }
+        }
+        return super.dispatchTouchEvent(event)
+    }
+
+    private fun hideKeyboard() {
+        val token = currentFocus?.windowToken ?: textInput.windowToken
+        (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+            .hideSoftInputFromWindow(token, 0)
+    }
+
     private fun releasePlayer() {
         mainHandler.removeCallbacks(progressUpdater)
         mediaPlayer?.release()
@@ -626,6 +947,7 @@ class MainActivity : android.app.Activity() {
     override fun onDestroy() {
         generationId++
         voiceLoadCall?.cancel()
+        voiceErrorDialog?.dismiss()
         activeSynthesis?.cancel()
         releasePlayer()
         generatedFile?.delete()
@@ -633,11 +955,24 @@ class MainActivity : android.app.Activity() {
     }
 
     companion object {
+        private const val PREFERENCES_NAME = "voice-studio-settings"
+        private const val PREFERENCE_LANGUAGE = "selected-language"
+        private const val PREFERENCE_VOICE = "selected-voice"
+        private const val PREFERENCE_RATE = "rate"
+        private const val PREFERENCE_PITCH = "pitch"
+        private const val PREFERENCE_VOLUME = "volume"
         private const val MAX_TEXT_LENGTH = 5_000
+        private const val MAX_FILE_CHARACTERS = 50_000
+        private const val MAX_FILE_BYTES = 1L * 1024 * 1024
         private const val GENERATION_TIMEOUT_MS = 180_000L
+        private const val FILE_GENERATION_TIMEOUT_MS = 30 * 60_000L
         private const val STORAGE_PERMISSION_REQUEST = 1001
+        private const val TEXT_FILE_REQUEST = 1002
         private const val DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural"
-        private const val VOICE_LOAD_ERROR = "网络异常，请退出重试"
+        private const val VOICE_LOAD_ERROR = "当前网络异常，音色加载失败。"
+        private const val IMPORT_LIMIT_HINT = "仅支持 TXT 文件，最大 1 MB、最多 50000 字"
+        private const val FILE_TOO_LARGE_MESSAGE = "文件超过 1 MB，字数太多，暂无法生成。"
+        private const val TEXT_TOO_LONG_MESSAGE = "文件超过 50000 字，字数太多，暂无法生成。"
         private val PAGE_COLOR = Color.rgb(244, 246, 250)
         private val TEXT_COLOR = Color.rgb(25, 32, 47)
         private val MUTED_COLOR = Color.rgb(100, 111, 132)
@@ -646,4 +981,7 @@ class MainActivity : android.app.Activity() {
         private val SUCCESS_COLOR = Color.rgb(26, 137, 92)
         private val ERROR_COLOR = Color.rgb(198, 49, 58)
     }
+
+    private data class FileMetadata(val name: String, val size: Long?)
+    private class FileTooLargeException : Exception()
 }

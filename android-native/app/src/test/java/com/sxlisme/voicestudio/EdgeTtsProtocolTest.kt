@@ -55,12 +55,13 @@ class EdgeTtsProtocolTest {
     }
 
     @Test
-    fun splitsFiveThousandChineseCharactersWithinUtf8Limit() {
-        val text = "你好，欢迎使用语音工作台。".repeat(400).take(5_000)
+    fun splitsFiftyThousandChineseCharactersWithinUtf8Limit() {
+        val text = "你好，欢迎使用语音工作台。".repeat(4_000).take(50_000)
         val chunks = EdgeTtsProtocol.splitText(text)
-        assertTrue(chunks.size > 1)
+        assertTrue(chunks.size > 20)
         assertTrue(chunks.all { it.toByteArray(Charsets.UTF_8).size <= 4_000 })
         assertEquals(text, chunks.joinToString(""))
+        assertEquals(3, EdgeTtsClient.MAX_CHUNK_RETRIES)
     }
 
     @Test
@@ -109,13 +110,23 @@ class EdgeTtsProtocolTest {
         val latch = CountDownLatch(1)
         var result: ByteArray? = null
         var failure: String? = null
-        val socket = EdgeTtsClient().synthesize(
+        var started = false
+        var completed = false
+        val handle = EdgeTtsClient().synthesizeText(
             text = "你好",
             voice = "zh-CN-XiaoxiaoNeural",
             rate = 0,
             pitch = 0,
             volume = 0,
             callback = object : EdgeTtsClient.Callback {
+                override fun onProgress(current: Int, total: Int) {
+                    started = current == 1 && total == 1
+                }
+
+                override fun onChunkComplete(completedCount: Int, total: Int) {
+                    completed = completedCount == 1 && total == 1
+                }
+
                 override fun onSuccess(audio: ByteArray) {
                     result = audio
                     latch.countDown()
@@ -128,8 +139,10 @@ class EdgeTtsProtocolTest {
             },
         )
         assertTrue("TTS request timed out", latch.await(45, TimeUnit.SECONDS))
-        socket.cancel()
+        handle.cancel()
         assertEquals(failure, null)
+        assertTrue("synthesis progress did not start", started)
+        assertTrue("synthesis progress did not complete", completed)
         assertTrue("TTS returned no audio", result != null && result!!.isNotEmpty())
         assertTrue("audio was unexpectedly small", result!!.size > 1_000)
     }

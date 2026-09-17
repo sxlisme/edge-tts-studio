@@ -110,6 +110,8 @@ object EdgeTtsProtocol {
 class EdgeTtsClient {
     interface Callback {
         fun onProgress(current: Int, total: Int) = Unit
+        fun onChunkComplete(completed: Int, total: Int) = Unit
+        fun onRetry(current: Int, total: Int, retryCount: Int) = Unit
         fun onSuccess(audio: ByteArray)
         fun onFailure(message: String)
     }
@@ -184,9 +186,9 @@ class EdgeTtsClient {
         val handle = SynthesisHandle()
         val combinedAudio = ByteArrayOutputStream()
 
-        fun synthesizeChunk(index: Int) {
+        fun synthesizeChunk(index: Int, retryCount: Int = 0) {
             if (handle.isCancelled()) return
-            callback.onProgress(index + 1, chunks.size)
+            if (retryCount == 0) callback.onProgress(index + 1, chunks.size)
             val socket = synthesize(
                 text = chunks[index],
                 voice = voice,
@@ -197,12 +199,22 @@ class EdgeTtsClient {
                     override fun onSuccess(audio: ByteArray) {
                         if (handle.isCancelled()) return
                         combinedAudio.write(audio)
+                        callback.onChunkComplete(index + 1, chunks.size)
                         if (index + 1 < chunks.size) synthesizeChunk(index + 1)
                         else callback.onSuccess(combinedAudio.toByteArray())
                     }
 
                     override fun onFailure(message: String) {
-                        if (!handle.isCancelled()) callback.onFailure(message)
+                        if (handle.isCancelled()) return
+                        if (retryCount < MAX_CHUNK_RETRIES) {
+                            val nextRetry = retryCount + 1
+                            callback.onRetry(index + 1, chunks.size, nextRetry)
+                            synthesizeChunk(index, nextRetry)
+                        } else {
+                            callback.onFailure(
+                                "第 ${index + 1}/${chunks.size} 段重试 $MAX_CHUNK_RETRIES 次后仍失败：$message",
+                            )
+                        }
                     }
                 },
             )
@@ -271,6 +283,7 @@ class EdgeTtsClient {
     }
 
     companion object {
+        const val MAX_CHUNK_RETRIES = 3
         private const val VOICE_LIST_URL =
             "https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/voices/list" +
                 "?trustedclienttoken=6A5AA1D4EAFF4E9FB37E23D68491D6F4"
