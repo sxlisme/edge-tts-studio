@@ -51,28 +51,30 @@ object EdgeTtsProtocol {
         return frame.copyOfRange(audioStart, frame.size)
     }
 
-    fun splitText(text: String, maxBytes: Int = 4_000): List<String> {
-        require(maxBytes > 0)
+    fun splitText(
+        text: String,
+        maxCharacters: Int = 500,
+        preferredMinCharacters: Int = 300,
+    ): List<String> {
+        require(maxCharacters > 0)
+        require(preferredMinCharacters in 1..maxCharacters)
         val chunks = mutableListOf<String>()
         var remaining = text.trim()
         while (remaining.isNotEmpty()) {
-            if (remaining.toByteArray(Charsets.UTF_8).size <= maxBytes) {
+            if (remaining.codePointCount(0, remaining.length) <= maxCharacters) {
                 chunks += remaining
                 break
             }
-            var bytes = 0
+            var characters = 0
             var offset = 0
             var safeEnd = 0
             var preferredEnd = 0
-            while (offset < remaining.length) {
+            while (offset < remaining.length && characters < maxCharacters) {
                 val codePoint = remaining.codePointAt(offset)
-                val character = String(Character.toChars(codePoint))
-                val characterBytes = character.toByteArray(Charsets.UTF_8).size
-                if (bytes + characterBytes > maxBytes) break
-                bytes += characterBytes
                 offset += Character.charCount(codePoint)
+                characters++
                 safeEnd = offset
-                if (bytes >= maxBytes / 2 &&
+                if (characters >= preferredMinCharacters &&
                     (Character.isWhitespace(codePoint) || codePoint in BREAK_CODE_POINTS)
                 ) {
                     preferredEnd = safeEnd

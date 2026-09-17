@@ -1596,8 +1596,8 @@ async function loadAppInformation() {
     isDesktopApp = !mobileUserAgent;
     document.body.classList.toggle("mobile-app", !isDesktopApp);
     elements.systemVersion.textContent = navigator.platform || "当前设备";
-    elements.applicationVersion.textContent = "v1.7.0";
-    for (const badge of elements.appVersionBadges) badge.textContent = "v1.7.0";
+    elements.applicationVersion.textContent = "v1.7.1";
+    for (const badge of elements.appVersionBadges) badge.textContent = "v1.7.1";
   }
 }
 

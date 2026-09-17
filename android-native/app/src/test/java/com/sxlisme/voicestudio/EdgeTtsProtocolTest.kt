@@ -55,11 +55,12 @@ class EdgeTtsProtocolTest {
     }
 
     @Test
-    fun splitsFiftyThousandChineseCharactersWithinUtf8Limit() {
+    fun splitsFiftyThousandChineseCharactersNearFiveHundredCharacters() {
         val text = "你好，欢迎使用语音工作台。".repeat(4_000).take(50_000)
         val chunks = EdgeTtsProtocol.splitText(text)
-        assertTrue(chunks.size > 20)
-        assertTrue(chunks.all { it.toByteArray(Charsets.UTF_8).size <= 4_000 })
+        assertTrue(chunks.size >= 100)
+        assertTrue(chunks.all { it.codePointCount(0, it.length) <= 500 })
+        assertTrue(chunks.dropLast(1).all { it.codePointCount(0, it.length) >= 300 })
         assertEquals(text, chunks.joinToString(""))
         assertEquals(3, EdgeTtsClient.MAX_CHUNK_RETRIES)
     }

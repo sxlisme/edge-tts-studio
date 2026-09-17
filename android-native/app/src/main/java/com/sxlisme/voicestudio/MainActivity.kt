@@ -83,6 +83,10 @@ class MainActivity : android.app.Activity() {
     private var mediaPlayer: MediaPlayer? = null
     private var voiceLoadCall: Call? = null
     private var voiceErrorDialog: AlertDialog? = null
+    private var generationDialog: AlertDialog? = null
+    private var generationDialogProgress: ProgressBar? = null
+    private var generationDialogProgressText: TextView? = null
+    private var generationTimeout: Runnable? = null
     private var activeSynthesis: EdgeTtsClient.SynthesisHandle? = null
     private var generatedFile: File? = null
     private var generatedAudio: ByteArray? = null
@@ -155,7 +159,7 @@ class MainActivity : android.app.Activity() {
         row.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(label("声工坊", 20f, TEXT_COLOR, Typeface.BOLD))
-            addView(label("原生 Android 版 · v1.7.0", 12f, MUTED_COLOR))
+            addView(label("原生 Android 版 · v1.7.1", 12f, MUTED_COLOR))
         })
         return row
     }
@@ -360,6 +364,7 @@ class MainActivity : android.app.Activity() {
             text = "保存到下载目录"
             isAllCaps = false
             isEnabled = false
+            visibility = View.GONE
             minimumHeight = dp(50)
             setTextColor(Color.WHITE)
             backgroundTintList = ColorStateList.valueOf(ACCENT_COLOR)
@@ -641,6 +646,87 @@ class MainActivity : android.app.Activity() {
             .show()
     }
 
+    private fun showGenerationDialog(total: Int) {
+        dismissGenerationDialog()
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(8), dp(24), dp(4))
+        }
+        generationDialogProgressText = label(generationProgressText(0, total), 15f, TEXT_COLOR).apply {
+            gravity = Gravity.CENTER
+        }
+        generationDialogProgress = ProgressBar(
+            this,
+            null,
+            android.R.attr.progressBarStyleHorizontal,
+        ).apply {
+            isIndeterminate = false
+            max = total.coerceAtLeast(1)
+            progress = 0
+            progressTintList = ColorStateList.valueOf(ACCENT_COLOR)
+        }
+        val warning = label(GENERATION_WARNING, 13f, ERROR_COLOR).apply {
+            setPadding(0, dp(14), 0, 0)
+        }
+        content.addView(generationDialogProgressText, matchWrapParams())
+        content.addView(generationDialogProgress, matchWrapParams().apply { topMargin = dp(10) })
+        content.addView(warning, matchWrapParams())
+
+        generationDialog = AlertDialog.Builder(this)
+            .setTitle("正在生成语音")
+            .setView(content)
+            .setNegativeButton("停止任务", null)
+            .setCancelable(false)
+            .create()
+            .also { dialog ->
+                dialog.setOnShowListener {
+                    dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener {
+                        stopGeneration()
+                    }
+                }
+                dialog.show()
+            }
+    }
+
+    private fun updateGenerationDialog(completed: Int, total: Int, retryMessage: String? = null) {
+        generationDialogProgress?.max = total.coerceAtLeast(1)
+        generationDialogProgress?.progress = completed.coerceIn(0, total)
+        generationDialogProgressText?.text = buildString {
+            append(generationProgressText(completed, total))
+            if (retryMessage != null) append("\n$retryMessage")
+        }
+    }
+
+    private fun generationProgressText(completed: Int, total: Int): String {
+        val percent = if (total > 0) completed * 100.0 / total else 0.0
+        return String.format(
+            Locale.SIMPLIFIED_CHINESE,
+            "%.2f%% · 已完成 %d/%d 个片段",
+            percent,
+            completed,
+            total,
+        )
+    }
+
+    private fun stopGeneration() {
+        generationId++
+        activeSynthesis?.cancel()
+        activeSynthesis = null
+        generationTimeout?.let(mainHandler::removeCallbacks)
+        generationTimeout = null
+        setGenerating(false)
+        dismissGenerationDialog()
+        statusText.setTextColor(ERROR_COLOR)
+        statusText.text = "任务已停止"
+    }
+
+    private fun dismissGenerationDialog() {
+        generationDialog?.dismiss()
+        generationDialog = null
+        generationDialogProgress = null
+        generationDialogProgressText = null
+    }
+
     private fun generateSpeech() {
         val sourceFileName = importedFileName
         val text = (importedText ?: textInput.text.toString()).trim()
@@ -666,18 +752,24 @@ class MainActivity : android.app.Activity() {
         }
         val requestId = ++generationId
         activeSynthesis?.cancel()
+        val totalChunks = EdgeTtsProtocol.splitText(text).size.coerceAtLeast(1)
         setGenerating(true)
+        showGenerationDialog(totalChunks)
         statusText.text = "正在生成 ${voice.displayName} 的语音…"
 
         val timeout = Runnable {
             if (requestId != generationId) return@Runnable
             generationId++
             activeSynthesis?.cancel()
+            activeSynthesis = null
+            generationTimeout = null
             setGenerating(false)
+            dismissGenerationDialog()
             statusText.setTextColor(ERROR_COLOR)
             statusText.text = "生成超时，请检查网络后重试"
         }
         val timeoutMillis = if (sourceFileName == null) GENERATION_TIMEOUT_MS else FILE_GENERATION_TIMEOUT_MS
+        generationTimeout = timeout
         mainHandler.postDelayed(timeout, timeoutMillis)
 
         activeSynthesis = ttsClient.synthesizeText(
@@ -691,6 +783,7 @@ class MainActivity : android.app.Activity() {
                     if (requestId != generationId) return@runOnUiThread
                     generationProgress.max = total
                     generationProgress.progress = current - 1
+                    updateGenerationDialog(current - 1, total)
                     statusText.text = if (total > 1) {
                         "正在生成 ${voice.displayName} 的语音（$current/$total）…"
                     } else {
@@ -702,26 +795,34 @@ class MainActivity : android.app.Activity() {
                     if (requestId != generationId) return@runOnUiThread
                     generationProgress.max = total
                     generationProgress.progress = completed
+                    updateGenerationDialog(completed, total)
+                    statusText.text = generationProgressText(completed, total)
                 }
 
                 override fun onRetry(current: Int, total: Int, retryCount: Int) = runOnUiThread {
                     if (requestId != generationId) return@runOnUiThread
-                    statusText.text = "第 $current/$total 段生成失败，正在重试 $retryCount/${EdgeTtsClient.MAX_CHUNK_RETRIES}…"
+                    val retryMessage = "第 $current/$total 段正在重试 $retryCount/${EdgeTtsClient.MAX_CHUNK_RETRIES}"
+                    updateGenerationDialog(current - 1, total, retryMessage)
+                    statusText.text = retryMessage
                 }
 
                 override fun onSuccess(audio: ByteArray) = runOnUiThread {
                     if (requestId != generationId) return@runOnUiThread
                     mainHandler.removeCallbacks(timeout)
+                    generationTimeout = null
                     activeSynthesis = null
                     setGenerating(false)
+                    dismissGenerationDialog()
                     prepareAudio(audio, voice, sourceFileName)
                 }
 
                 override fun onFailure(message: String) = runOnUiThread {
                     if (requestId != generationId) return@runOnUiThread
                     mainHandler.removeCallbacks(timeout)
+                    generationTimeout = null
                     activeSynthesis = null
                     setGenerating(false)
+                    dismissGenerationDialog()
                     statusText.setTextColor(ERROR_COLOR)
                     statusText.text = "生成失败：$message"
                 }
@@ -748,6 +849,7 @@ class MainActivity : android.app.Activity() {
                 start()
             }
             playButton.isEnabled = true
+            saveButton.visibility = View.VISIBLE
             saveButton.isEnabled = true
             playerProgress.isEnabled = true
             playButton.text = "暂停"
@@ -876,7 +978,10 @@ class MainActivity : android.app.Activity() {
             saveButton.isEnabled = false
         } else if (generatedAudio != null) {
             playButton.isEnabled = true
+            saveButton.visibility = View.VISIBLE
             saveButton.isEnabled = true
+        } else {
+            saveButton.visibility = View.GONE
         }
     }
 
@@ -948,6 +1053,8 @@ class MainActivity : android.app.Activity() {
         generationId++
         voiceLoadCall?.cancel()
         voiceErrorDialog?.dismiss()
+        generationTimeout?.let(mainHandler::removeCallbacks)
+        dismissGenerationDialog()
         activeSynthesis?.cancel()
         releasePlayer()
         generatedFile?.delete()
@@ -973,6 +1080,7 @@ class MainActivity : android.app.Activity() {
         private const val IMPORT_LIMIT_HINT = "仅支持 TXT 文件，最大 1 MB、最多 50000 字"
         private const val FILE_TOO_LARGE_MESSAGE = "文件超过 1 MB，字数太多，暂无法生成。"
         private const val TEXT_TOO_LONG_MESSAGE = "文件超过 50000 字，字数太多，暂无法生成。"
+        private const val GENERATION_WARNING = "字数过多可能存在转换失败，生成时间会更长。"
         private val PAGE_COLOR = Color.rgb(244, 246, 250)
         private val TEXT_COLOR = Color.rgb(25, 32, 47)
         private val MUTED_COLOR = Color.rgb(100, 111, 132)
