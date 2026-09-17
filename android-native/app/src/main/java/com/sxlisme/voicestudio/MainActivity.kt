@@ -18,6 +18,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.text.Editable
@@ -86,7 +87,14 @@ class MainActivity : android.app.Activity() {
     private var generationDialog: AlertDialog? = null
     private var generationDialogProgress: ProgressBar? = null
     private var generationDialogProgressText: TextView? = null
+    private var generationDialogDotsText: TextView? = null
     private var generationTimeout: Runnable? = null
+    private var generationAnimation: Runnable? = null
+    private var generationCompletion: Runnable? = null
+    private var generationStartedAt = 0L
+    private var generationDisplayedPercent = 0
+    private var generationRealPercent = 0
+    private var generationDotCount = 1
     private var activeSynthesis: EdgeTtsClient.SynthesisHandle? = null
     private var generatedFile: File? = null
     private var generatedAudio: ByteArray? = null
@@ -159,7 +167,7 @@ class MainActivity : android.app.Activity() {
         row.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(label("声工坊", 20f, TEXT_COLOR, Typeface.BOLD))
-            addView(label("原生 Android 版 · v1.7.1", 12f, MUTED_COLOR))
+            addView(label("原生 Android 版 · v1.7.2", 12f, MUTED_COLOR))
         })
         return row
     }
@@ -646,14 +654,21 @@ class MainActivity : android.app.Activity() {
             .show()
     }
 
-    private fun showGenerationDialog(total: Int) {
+    private fun showGenerationDialog() {
         dismissGenerationDialog()
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(24), dp(8), dp(24), dp(4))
         }
-        generationDialogProgressText = label(generationProgressText(0, total), 15f, TEXT_COLOR).apply {
+        val progressRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
+        }
+        generationDialogProgressText = label("生成进度 1%", 15f, TEXT_COLOR).apply {
+            gravity = Gravity.END
+        }
+        generationDialogDotsText = label(".", 15f, TEXT_COLOR).apply {
+            gravity = Gravity.START
         }
         generationDialogProgress = ProgressBar(
             this,
@@ -661,14 +676,22 @@ class MainActivity : android.app.Activity() {
             android.R.attr.progressBarStyleHorizontal,
         ).apply {
             isIndeterminate = false
-            max = total.coerceAtLeast(1)
-            progress = 0
+            max = 100
+            progress = 1
             progressTintList = ColorStateList.valueOf(ACCENT_COLOR)
         }
         val warning = label(GENERATION_WARNING, 13f, ERROR_COLOR).apply {
             setPadding(0, dp(14), 0, 0)
         }
-        content.addView(generationDialogProgressText, matchWrapParams())
+        progressRow.addView(
+            generationDialogProgressText,
+            LinearLayout.LayoutParams(dp(142), ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
+        progressRow.addView(
+            generationDialogDotsText,
+            LinearLayout.LayoutParams(dp(34), ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
+        content.addView(progressRow, matchWrapParams())
         content.addView(generationDialogProgress, matchWrapParams().apply { topMargin = dp(10) })
         content.addView(warning, matchWrapParams())
 
@@ -686,26 +709,51 @@ class MainActivity : android.app.Activity() {
                 }
                 dialog.show()
             }
+        startGenerationAnimation()
     }
 
-    private fun updateGenerationDialog(completed: Int, total: Int, retryMessage: String? = null) {
-        generationDialogProgress?.max = total.coerceAtLeast(1)
-        generationDialogProgress?.progress = completed.coerceIn(0, total)
-        generationDialogProgressText?.text = buildString {
-            append(generationProgressText(completed, total))
-            if (retryMessage != null) append("\n$retryMessage")
+    private fun startGenerationAnimation() {
+        generationStartedAt = SystemClock.elapsedRealtime()
+        generationDisplayedPercent = 1
+        generationRealPercent = 0
+        generationDotCount = 1
+        renderGenerationProgress()
+        generationAnimation = object : Runnable {
+            override fun run() {
+                val elapsed = SystemClock.elapsedRealtime() - generationStartedAt
+                generationDisplayedPercent = SynthesisProgress.displayedPercent(
+                    elapsedMillis = elapsed,
+                    actualPercent = generationRealPercent,
+                    previousPercent = generationDisplayedPercent,
+                )
+                generationDotCount = generationDotCount % 3 + 1
+                renderGenerationProgress()
+                mainHandler.postDelayed(this, DOT_ANIMATION_INTERVAL_MS)
+            }
         }
+        mainHandler.postDelayed(generationAnimation!!, DOT_ANIMATION_INTERVAL_MS)
     }
 
-    private fun generationProgressText(completed: Int, total: Int): String {
-        val percent = if (total > 0) completed * 100.0 / total else 0.0
-        return String.format(
-            Locale.SIMPLIFIED_CHINESE,
-            "%.2f%% · 已完成 %d/%d 个片段",
-            percent,
-            completed,
-            total,
-        )
+    private fun updateGenerationProgress(completed: Int, total: Int) {
+        val actualPercent = if (total > 0) completed * 100 / total else 0
+        generationRealPercent = actualPercent.coerceAtMost(99)
+        generationDisplayedPercent = maxOf(generationDisplayedPercent, generationRealPercent)
+        renderGenerationProgress()
+    }
+
+    private fun renderGenerationProgress() {
+        generationDialogProgressText?.text = "生成进度 $generationDisplayedPercent%"
+        generationDialogDotsText?.text = ".".repeat(generationDotCount)
+        generationDialogProgress?.progress = generationDisplayedPercent
+    }
+
+    private fun showGenerationCompleted() {
+        generationAnimation?.let(mainHandler::removeCallbacks)
+        generationAnimation = null
+        generationDisplayedPercent = 100
+        generationDotCount = 3
+        renderGenerationProgress()
+        generationDialog?.getButton(AlertDialog.BUTTON_NEGATIVE)?.isEnabled = false
     }
 
     private fun stopGeneration() {
@@ -714,6 +762,8 @@ class MainActivity : android.app.Activity() {
         activeSynthesis = null
         generationTimeout?.let(mainHandler::removeCallbacks)
         generationTimeout = null
+        generationCompletion?.let(mainHandler::removeCallbacks)
+        generationCompletion = null
         setGenerating(false)
         dismissGenerationDialog()
         statusText.setTextColor(ERROR_COLOR)
@@ -721,10 +771,13 @@ class MainActivity : android.app.Activity() {
     }
 
     private fun dismissGenerationDialog() {
+        generationAnimation?.let(mainHandler::removeCallbacks)
+        generationAnimation = null
         generationDialog?.dismiss()
         generationDialog = null
         generationDialogProgress = null
         generationDialogProgressText = null
+        generationDialogDotsText = null
     }
 
     private fun generateSpeech() {
@@ -752,9 +805,8 @@ class MainActivity : android.app.Activity() {
         }
         val requestId = ++generationId
         activeSynthesis?.cancel()
-        val totalChunks = EdgeTtsProtocol.splitText(text).size.coerceAtLeast(1)
         setGenerating(true)
-        showGenerationDialog(totalChunks)
+        showGenerationDialog()
         statusText.text = "正在生成 ${voice.displayName} 的语音…"
 
         val timeout = Runnable {
@@ -783,27 +835,21 @@ class MainActivity : android.app.Activity() {
                     if (requestId != generationId) return@runOnUiThread
                     generationProgress.max = total
                     generationProgress.progress = current - 1
-                    updateGenerationDialog(current - 1, total)
-                    statusText.text = if (total > 1) {
-                        "正在生成 ${voice.displayName} 的语音（$current/$total）…"
-                    } else {
-                        "正在生成 ${voice.displayName} 的语音…"
-                    }
+                    updateGenerationProgress(current - 1, total)
+                    statusText.text = "正在生成 ${voice.displayName} 的语音…"
                 }
 
                 override fun onChunkComplete(completed: Int, total: Int) = runOnUiThread {
                     if (requestId != generationId) return@runOnUiThread
                     generationProgress.max = total
                     generationProgress.progress = completed
-                    updateGenerationDialog(completed, total)
-                    statusText.text = generationProgressText(completed, total)
+                    updateGenerationProgress(completed, total)
                 }
 
                 override fun onRetry(current: Int, total: Int, retryCount: Int) = runOnUiThread {
                     if (requestId != generationId) return@runOnUiThread
-                    val retryMessage = "第 $current/$total 段正在重试 $retryCount/${EdgeTtsClient.MAX_CHUNK_RETRIES}"
-                    updateGenerationDialog(current - 1, total, retryMessage)
-                    statusText.text = retryMessage
+                    updateGenerationProgress(current - 1, total)
+                    statusText.text = "生成失败，正在重试 $retryCount/${EdgeTtsClient.MAX_CHUNK_RETRIES}…"
                 }
 
                 override fun onSuccess(audio: ByteArray) = runOnUiThread {
@@ -811,9 +857,17 @@ class MainActivity : android.app.Activity() {
                     mainHandler.removeCallbacks(timeout)
                     generationTimeout = null
                     activeSynthesis = null
-                    setGenerating(false)
-                    dismissGenerationDialog()
-                    prepareAudio(audio, voice, sourceFileName)
+                    showGenerationCompleted()
+                    statusText.text = "生成完成，正在准备试听…"
+                    val completion = Runnable {
+                        if (requestId != generationId) return@Runnable
+                        generationCompletion = null
+                        setGenerating(false)
+                        dismissGenerationDialog()
+                        prepareAudio(audio, voice, sourceFileName)
+                    }
+                    generationCompletion = completion
+                    mainHandler.postDelayed(completion, COMPLETION_DISPLAY_MS)
                 }
 
                 override fun onFailure(message: String) = runOnUiThread {
@@ -1054,6 +1108,8 @@ class MainActivity : android.app.Activity() {
         voiceLoadCall?.cancel()
         voiceErrorDialog?.dismiss()
         generationTimeout?.let(mainHandler::removeCallbacks)
+        generationCompletion?.let(mainHandler::removeCallbacks)
+        generationCompletion = null
         dismissGenerationDialog()
         activeSynthesis?.cancel()
         releasePlayer()
@@ -1073,6 +1129,8 @@ class MainActivity : android.app.Activity() {
         private const val MAX_FILE_BYTES = 1L * 1024 * 1024
         private const val GENERATION_TIMEOUT_MS = 180_000L
         private const val FILE_GENERATION_TIMEOUT_MS = 30 * 60_000L
+        private const val DOT_ANIMATION_INTERVAL_MS = 400L
+        private const val COMPLETION_DISPLAY_MS = 450L
         private const val STORAGE_PERMISSION_REQUEST = 1001
         private const val TEXT_FILE_REQUEST = 1002
         private const val DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural"

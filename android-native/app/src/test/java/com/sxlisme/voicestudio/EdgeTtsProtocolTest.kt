@@ -55,6 +55,16 @@ class EdgeTtsProtocolTest {
     }
 
     @Test
+    fun estimatedProgressStartsImmediatelyAndNeverRegresses() {
+        assertEquals(1, SynthesisProgress.displayedPercent(0, 0, 0))
+        assertEquals(2, SynthesisProgress.displayedPercent(1_500, 0, 1))
+        assertEquals(20, SynthesisProgress.displayedPercent(30_000, 0, 19))
+        assertEquals(42, SynthesisProgress.displayedPercent(10_000, 42, 7))
+        assertEquals(42, SynthesisProgress.displayedPercent(60_000, 12, 42))
+        assertEquals(99, SynthesisProgress.displayedPercent(60_000, 100, 42))
+    }
+
+    @Test
     fun splitsFiftyThousandChineseCharactersNearFiveHundredCharacters() {
         val text = "你好，欢迎使用语音工作台。".repeat(4_000).take(50_000)
         val chunks = EdgeTtsProtocol.splitText(text)

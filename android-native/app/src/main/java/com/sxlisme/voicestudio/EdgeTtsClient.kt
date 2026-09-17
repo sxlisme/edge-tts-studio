@@ -15,6 +15,17 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
 
+object SynthesisProgress {
+    const val STEP_MILLIS = 1_500L
+
+    fun displayedPercent(elapsedMillis: Long, actualPercent: Int, previousPercent: Int): Int {
+        val estimatedPercent = (1 + elapsedMillis.coerceAtLeast(0) / STEP_MILLIS)
+            .toInt()
+            .coerceAtMost(20)
+        return maxOf(estimatedPercent, actualPercent, previousPercent).coerceIn(1, 99)
+    }
+}
+
 object EdgeTtsProtocol {
     private const val TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
     private const val GEC_VERSION = "1-130.0.2849.68"

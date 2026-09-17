@@ -11,8 +11,8 @@ android {
         applicationId = "com.sxlisme.voicestudio"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10701
-        versionName = "1.7.1"
+        versionCode = 10702
+        versionName = "1.7.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
