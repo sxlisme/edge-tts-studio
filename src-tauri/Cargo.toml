@@ -18,7 +18,7 @@ chardetng = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 encoding_rs = "0.8"
 futures-util = "0.3"
-msedge-tts = { version = "=0.4.0", default-features = false, features = ["tokio-runtime"] }
+msedge-tts = { git = "https://github.com/hs-CN/msedge-tts", rev = "0c60fb67e95fb20d484e26f565cca1abdd81def4", default-features = false, features = ["tokio-runtime"] }
 pdf-extract = "0.12"
 quick-xml = "0.38"
 rwml = "=0.1.4"
