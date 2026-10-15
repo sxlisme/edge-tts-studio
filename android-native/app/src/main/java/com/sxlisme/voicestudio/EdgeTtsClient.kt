@@ -1,7 +1,6 @@
 package com.sxlisme.voicestudio
 
 import java.io.ByteArrayOutputStream
-import java.security.MessageDigest
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.UUID
@@ -28,7 +27,7 @@ object SynthesisProgress {
 
 object EdgeTtsProtocol {
     private const val TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
-    private const val GEC_VERSION = "1-130.0.2849.68"
+    private const val GEC_VERSION = "2-155.0.4283.45"
     private const val BASE_URL = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1"
 
     fun websocketUrl(nowMillis: Long = System.currentTimeMillis()): String {
@@ -99,11 +98,7 @@ object EdgeTtsProtocol {
     }
 
     internal fun securityToken(nowMillis: Long): String {
-        val windowsEpochMillis = nowMillis + 11_644_473_600_000L
-        var ticks = windowsEpochMillis * 10_000L
-        ticks -= ticks % 3_000_000_000L
-        val digest = MessageDigest.getInstance("SHA-256").digest("$ticks$TOKEN".toByteArray())
-        return digest.joinToString("") { "%02X".format(it) }
+        return EdgeTtsDrm.generate(nowMillis)
     }
 
     internal fun escapeXml(value: String): String = value
@@ -301,7 +296,7 @@ class EdgeTtsClient {
             "https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/voices/list" +
                 "?trustedclienttoken=6A5AA1D4EAFF4E9FB37E23D68491D6F4"
         private const val USER_AGENT = "Mozilla/5.0 (Linux; Android 10; HD1913) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/143.0.7499.193 Mobile Safari/537.36 EdgA/143.0.3650.125"
+            "(KHTML, like Gecko) Chrome/155.0.0.0 Mobile Safari/537.36 EdgA/155.0.4283.45"
         private const val ORIGIN = "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold"
     }
 }

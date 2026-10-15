@@ -50,8 +50,15 @@ class EdgeTtsProtocolTest {
         val first = EdgeTtsProtocol.securityToken(now)
         val second = EdgeTtsProtocol.securityToken(now + 1_000L)
         assertEquals(first, second)
-        assertEquals(64, first.length)
-        assertTrue(first.all { it.isDigit() || it in 'A'..'F' })
+        assertEquals(
+            "99E54519B490BE5C-E162DB0977FBDCB9B86DD8148BF1BCDC3C0303176CE39852A42B415935C20654",
+            first,
+        )
+        assertTrue(first.matches(Regex("[0-9A-F]{16}-[0-9A-F]{64}")))
+
+        val url = EdgeTtsProtocol.websocketUrl(now)
+        assertTrue(url.contains("Sec-MS-GEC=$first"))
+        assertTrue(url.contains("Sec-MS-GEC-Version=2-155.0.4283.45"))
     }
 
     @Test
