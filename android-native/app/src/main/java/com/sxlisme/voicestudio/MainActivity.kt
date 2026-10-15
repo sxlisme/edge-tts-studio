@@ -167,7 +167,7 @@ class MainActivity : android.app.Activity() {
         row.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(label("声工坊", 20f, TEXT_COLOR, Typeface.BOLD))
-            addView(label("原生 Android 版 · v1.7.2", 12f, MUTED_COLOR))
+            addView(label("原生 Android 版 · v2.0.0", 12f, MUTED_COLOR))
         })
         return row
     }
